@@ -2,14 +2,25 @@
   "name": "apollo",
   "version": "1.0.0",
   "private": true,
-  "scripts": { "dev": "next dev", "build": "next build", "start": "next start" },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
   "dependencies": {
     "@supabase/ssr": "^0.6.1",
     "@supabase/supabase-js": "^2.50.0",
+    "html2canvas": "^1.4.1",
     "jspdf": "^3.0.1",
+    "katex": "^0.18.7",
     "next": "^15.3.3",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },
-  "devDependencies": { "@types/node": "^22.15.30", "@types/react": "^19.1.6", "@types/react-dom": "^19.1.6", "typescript": "^5.8.3" }
+  "devDependencies": {
+    "@types/node": "^22.15.30",
+    "@types/react": "^19.1.6",
+    "@types/react-dom": "^19.1.6",
+    "typescript": "^5.8.3"
+  }
 }

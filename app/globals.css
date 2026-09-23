@@ -153,3 +153,86 @@ body{font-size:16px}
   .content .page-heading>.btn{width:100%;white-space:normal}
   .notice{position:static;transform:none;max-width:none;margin:10px 12px}
 }
+.header-editor-layout{grid-template-columns:minmax(0,1fr) 360px;align-items:start}
+.header-editor-layout .header-config-card{display:grid;gap:13px}
+.header-config-card .header-label>input,.header-config-card .header-label>select{width:100%;min-height:42px;padding:10px 12px;border:1px solid #dfe7de;border-radius:7px;background:#fff;color:var(--ink);outline:none}
+.header-config-card .header-label>input:focus,.header-config-card .header-label>select:focus{border-color:#71a17c;box-shadow:0 0 0 3px #19875415}
+.header-config-card .header-label>select{appearance:auto}
+.header-data-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 14px}
+.header-logos-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.header-logos-grid .logo-row{min-width:0;align-items:flex-start;gap:9px}
+.header-logos-grid .logo-thumb,.header-logos-grid .logo-placeholder{flex:none;width:48px;height:44px}
+.header-logos-grid .logo-upload{min-width:0}
+.header-logos-grid .logo-upload span{line-height:1.4}
+.header-repeat-option{display:flex;align-items:flex-start;gap:10px;padding:11px 12px;border:1px solid #e4ebe2;border-radius:8px;background:#f8faf7}
+.header-repeat-option>input{width:15px;height:15px;margin:2px 0 0;accent-color:var(--green)}
+.header-repeat-option>span{display:grid;gap:3px}
+.header-repeat-option b{font-size:12px;color:#46584a}
+.header-repeat-option small{font-size:11px;color:#7c897e;line-height:1.4}
+.header-preview-column{position:sticky;top:88px;display:grid;align-self:start;gap:12px}
+.header-preview-card{display:grid;gap:12px;padding:16px;border:1px solid #e3eae1;border-radius:10px;background:#fff;box-shadow:0 4px 18px #304a3608}
+.header-live-preview{display:grid;gap:9px;min-height:190px;padding:18px 14px;border:1px solid #d7dfd5;border-radius:5px;background:#fff;color:#27352c;font-family:Georgia,"Times New Roman",serif}
+.header-live-top{display:grid;grid-template-columns:40px minmax(0,1fr) 40px;align-items:center;gap:6px;min-height:36px}
+.header-live-top>img,.header-live-logo-placeholder{width:38px;height:32px;object-fit:contain}
+.header-live-logo-placeholder{display:grid;place-items:center;border:1px dashed #d9e0d7;border-radius:3px;color:#9ba59b;font:7px "DM Sans",sans-serif}
+.header-live-logo-gap{min-height:1px}
+.header-live-institution{display:grid;gap:3px;text-align:center}
+.header-live-institution b{font-size:9px}
+.header-live-institution span{font-size:7px;color:#69756c}
+.header-live-split{display:grid;grid-template-columns:1fr 1fr;gap:9px;padding:6px 0;border-top:1px solid #e1e5df}
+.header-live-split>div{display:grid;align-content:start;gap:3px;font-size:7px}
+.header-live-split>div+div{text-align:right}
+.header-live-split b{font-size:8px}
+.header-live-split span{color:#67736a;line-height:1.4}
+.header-live-title{display:grid;gap:4px;padding:3px 0 8px;border-bottom:1px solid #d9dfd8;text-align:center}
+.header-live-title>b{font-size:9px;letter-spacing:.3px;text-transform:uppercase}
+.header-live-title>strong{font-size:13px}
+.header-live-title>span{font-size:7px;color:#68756b;line-height:1.4}
+.header-live-fields{display:grid;gap:4px;font-size:7px;color:#68756b}
+.header-live-field-row{display:flex;align-items:flex-end;gap:5px;min-width:0;min-height:10px}
+.header-live-field-row>span{display:flex;align-items:flex-end;gap:2px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 0}
+.header-live-field-row>span>i{display:block;flex:1;min-width:4px;height:.9em;border-bottom:1px solid #b9c2b8}
+.header-preview-caption{color:#77847a;font-size:11px;line-height:1.5}
+.header-preview-column .header-export-note{margin-top:0}
+.header-field{flex-wrap:wrap}
+.header-field .field-name{flex:1 1 150px;min-width:100px}
+.header-field .field-setting{display:flex;align-items:center;gap:4px;white-space:nowrap;color:#78857b;font-size:10px}
+.header-field .field-setting select,.header-field .field-setting input{height:30px;padding:4px 6px;border:1px solid #dfe7de;border-radius:5px;background:#fff;color:var(--ink);font-size:11px}
+.header-field .field-setting select{width:48px}
+.header-field .field-setting input{width:67px;text-align:right}
+@media(max-width:780px){.header-field .field-name{flex:1 1 130px}.header-field .field-setting{font-size:9px}}
+@media(max-width:1050px){.header-editor-layout{grid-template-columns:minmax(0,1fr) 300px}}
+@media(max-width:780px){
+  .header-editor-layout{grid-template-columns:1fr}
+  .header-preview-column{position:static}
+  .header-logos-grid,.header-data-grid{grid-template-columns:1fr}
+  .header-logos-grid .logo-row{padding:8px 0}
+  .header-preview-card{padding:13px}
+}
+.question-math-controls{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin:5px 0 10px}
+.question-math-controls .math-editor-toggle{min-height:34px;padding:7px 11px}
+.question-math-controls>span{color:#7e8b81;font-size:11px}
+.question-math-controls code{padding:2px 4px;border-radius:3px;background:#f1f5ef;color:#3d6046;font-family:ui-monospace,monospace}
+.math-render-preview{overflow:auto;padding:12px 14px;border:1px solid #e3eae1;border-radius:7px;background:#fff;color:#24332a;white-space:pre-wrap}
+.math-render-preview .katex-display{margin:.4em 0}
+.question-math-preview{margin:6px 0 13px}
+.math-editor-panel{display:grid;gap:12px;margin:0 0 14px;padding:14px;border:1px solid #dfe8dd;border-radius:9px;background:#f8faf7}
+.math-editor-label{display:grid;gap:6px;color:#56665a;font-size:12px;font-weight:700}
+.math-editor-label textarea{width:100%;min-height:96px;padding:10px 12px;border:1px solid #d9e3d8;border-radius:7px;background:#fff;color:#26342d;font:13px/1.5 ui-monospace,monospace;resize:vertical}
+.math-snippets{display:flex;gap:7px;flex-wrap:wrap}
+.math-snippets .btn{min-height:32px;padding:6px 9px;font-size:11px}
+.math-editor-preview{min-height:48px}
+.math-editor-footer{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.math-editor-footer>span{color:#78857b;font-size:11px;line-height:1.4}
+.math-editor-footer .btn{flex:none}
+.pdf-math-render{position:absolute;left:-10000px;top:0;box-sizing:border-box;overflow-wrap:anywhere;white-space:pre-wrap;padding:.2em 0;font-family:Arial,sans-serif;line-height:1.5;color:#000;background:#fff;pointer-events:none}
+.pdf-math-render .katex-display{margin:.6em 0}
+.question-extra .response-lines-toggle{display:flex;align-items:center;gap:7px;color:#627166;font-size:11px}
+.question-extra .response-lines-toggle input[type=checkbox]{width:14px;height:14px;min-width:14px;margin:0;padding:0;border:0;accent-color:var(--green)}
+.question-card[data-include-response-lines="false"]>.question-extra:not(.response-lines-control){display:none}
+@media(max-width:780px){
+  .question-math-controls{align-items:flex-start;flex-direction:column}
+  .math-editor-panel{padding:11px}
+  .math-editor-footer{align-items:stretch;flex-direction:column}
+  .math-editor-footer .btn{width:100%}
+}

@@ -1,15 +1,47 @@
 "use client";
 
 import { isRecord } from "@/lib/type-guards";
+import { renderToString } from "katex";
+import html2canvas from "html2canvas";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { jsPDF } from "jspdf";
 import { supabase } from "@/lib/supabase";
 
 type QuestionKind = "choice" | "multiple" | "truefalse" | "written" | "fill" | "matching";
-type Question = { id: string; kind: QuestionKind; text: string; options: string[]; answer: number; answers?: number[]; expected?: string; pairs?: { left: string; right: string }[]; points: number; responseLines?: number };
+type Question = { id: string; kind: QuestionKind; text: string; equation?: string; options: string[]; answer: number; answers?: number[]; expected?: string; pairs?: { left: string; right: string }[]; points: number; responseLines?: number; showResponseLines?: boolean };
 type Section = { id: string; title: string; instructions: string; pick: number; questions: Question[] };
-type HeaderField = { id: string; label: string; enabled: boolean; wide: boolean };
-type ExamHeader = { school: string; title: string; subtitle: string; logo: string; fields: HeaderField[] };
+type HeaderFieldRow = 1 | 2;
+type HeaderField = { id: string; label: string; enabled: boolean; row: HeaderFieldRow; width: number };
+const defaultHeaderFields: Omit<HeaderField, "id" | "enabled">[] = [
+  { label: "Nombre y apellido", row: 1, width: 7.5 },
+  { label: "Fecha", row: 1, width: 2.5 },
+  { label: "Nota", row: 1, width: 2 },
+  { label: "RUT / identificador", row: 2, width: 4 },
+  { label: "Curso", row: 2, width: 2.5 },
+  { label: "Puntaje", row: 2, width: 2.5 },
+];
+function headerFieldRows(fields: HeaderField[]) {
+  if (!fields.length) return [];
+  const rows: HeaderField[][] = [[], []];
+  for (const field of fields) rows[field.row - 1].push(field);
+  if (!rows[1].length) return rows[0].length ? [rows[0]] : [];
+  return rows;
+}
+type HeaderLayout = "institutional" | "split";
+type ExamHeader = {
+  school: string;
+  title: string;
+  subtitle: string;
+  logo: string;
+  rightLogo: string;
+  layout: HeaderLayout;
+  courseCode: string;
+  assessment: string;
+  academicPeriod: string;
+  date: string;
+  repeatOnPages: boolean;
+  fields: HeaderField[];
+};
 type Exam = { title: string; subject: string; grade: string; teacher: string; duration: string; variants: number; header: ExamHeader; sections: Section[] };
 type PdfStyle = "compact" | "balanced" | "spacious";
 type PlannedQuestion = { question: Question; optionOrder: number[]; matchOrder: number[] };
@@ -18,6 +50,46 @@ type Generation = { signature: string; forms: FormPlan[] };
 type User = { id: string; email: string; user_metadata?: { full_name?: string } };
 type SavedDocument = { id: string; title: string; updated_at: string; data: Exam };
 type SavedBank = { id: string; title: string; created_at: string };
+const mathDelimiterSplit = /(\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|\$[^$\n]+?\$)/g;
+const mathDelimiterTest = /\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|\$[^$\n]+?\$/;
+const mathSnippets = [
+  { label: "Fracción", latex: "\\frac{a}{b}" },
+  { label: "Raíz", latex: "\\sqrt{x}" },
+  { label: "Integral", latex: "\\int_{a}^{b} f(x)\\,dx" },
+  { label: "Sumatoria", latex: "\\sum_{i=1}^{n} a_i" },
+  { label: "Límite", latex: "\\lim_{x\\to 0} f(x)" },
+  { label: "Casos", latex: "\\begin{cases}x,&x>0\\\\-x,&x\\le 0\\end{cases}" },
+];
+function containsLatexMath(source: string) {
+  return mathDelimiterTest.test(source);
+}
+function escapeHtml(source: string) {
+  return source.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+function renderMathMarkup(source: string) {
+  return source.split(mathDelimiterSplit).map(part => {
+    const displayMode = part.startsWith("$$") || part.startsWith("\\[");
+    const delimiterSize = part.startsWith("\\") || part.startsWith("$$") ? 2 : 1;
+    const isMath = part.startsWith("$$") || part.startsWith("\\[") || part.startsWith("\\(") || part.startsWith("$") && part.endsWith("$");
+    if (!isMath) return escapeHtml(part);
+    return renderToString(part.slice(delimiterSize, -delimiterSize), { displayMode, output: "html", throwOnError: false });
+  }).join("");
+}
+async function renderMathCanvas(source: string, widthMm: number, fontSizePt: number, bold: boolean) {
+  const element = document.createElement("div");
+  element.className = "pdf-math-render";
+  element.style.width = `${widthMm * 96 / 25.4}px`;
+  element.style.fontSize = `${fontSizePt * 96 / 72}px`;
+  element.style.fontWeight = bold ? "700" : "400";
+  element.innerHTML = renderMathMarkup(source);
+  document.body.appendChild(element);
+  try {
+    await document.fonts.ready;
+    return await html2canvas(element, { backgroundColor: "#fff", scale: 2, logging: false });
+  } finally {
+    element.remove();
+  }
+}
 const fresh = (): Exam => ({
   title: "Nueva prueba",
   subject: "",
@@ -30,15 +102,14 @@ const fresh = (): Exam => ({
     title: "",
     subtitle: "",
     logo: "",
-    fields: [
-      { id: uid(), label: "Nombre y apellido", enabled: true, wide: true },
-      { id: uid(), label: "RUT / identificador", enabled: true, wide: false },
-      { id: uid(), label: "Curso", enabled: true, wide: false },
-      { id: uid(), label: "Fecha", enabled: true, wide: false },
-      { id: uid(), label: "Puntaje", enabled: true, wide: false },
-      { id: uid(), label: "Nota", enabled: true, wide: false },
-      { id: uid(), label: "Firma", enabled: true, wide: true },
-    ],
+    rightLogo: "",
+    layout: "institutional",
+    courseCode: "",
+    assessment: "",
+    academicPeriod: "",
+    date: "",
+    repeatOnPages: true,
+    fields: defaultHeaderFields.map(field => ({ id: uid(), enabled: true, ...field })),
   },
   sections: [{ id: uid(), title: "Sección 1", instructions: "", pick: 0, questions: [] }],
 });
@@ -59,19 +130,32 @@ const questionKinds = new Set<QuestionKind>(["choice", "multiple", "truefalse", 
 function isQuestionKind(value: unknown): value is QuestionKind {
   return typeof value === "string" && questionKinds.has(value as QuestionKind);
 }
+function splitTrailingDisplayEquation(source: string) {
+  const match = /(?:^|\n)\\\[\n([\s\S]*?)\n\\\]\s*$/.exec(source);
+  if (!match) return null;
+  return { text: source.slice(0, match.index).replace(/\n+$/, ""), equation: match[1].trim() };
+}
 function parseQuestions(value: unknown): Question[] | null {
   if (!Array.isArray(value) || value.length > 500) return null;
   const questions: Question[] = [];
   for (const candidate of value) {
     if (!isRecord(candidate)) return null;
     const kind = candidate.kind;
-    const text = candidate.text;
+    const rawText = candidate.text;
+    const candidateEquation = candidate.equation;
+    const candidateShowResponseLines = candidate.showResponseLines;
     const points = candidate.points;
     const options = candidate.options;
-    if (!isQuestionKind(kind) || typeof text !== "string" || text.length > 20_000 ||
+    if (!isQuestionKind(kind) || typeof rawText !== "string" || rawText.length > 20_000 ||
         typeof points !== "number" || !Number.isFinite(points) || points < 0 ||
         !Array.isArray(options) || options.length > 100 ||
         !options.every((option): option is string => typeof option === "string" && option.length <= 10_000)) return null;
+    if (candidateEquation !== undefined &&
+        (typeof candidateEquation !== "string" || candidateEquation.length > 20_000)) return null;
+    if (candidateShowResponseLines !== undefined && typeof candidateShowResponseLines !== "boolean") return null;
+    const legacyDisplayEquation = candidateEquation === undefined ? splitTrailingDisplayEquation(rawText) : null;
+    const text = legacyDisplayEquation?.text ?? rawText;
+    const equation = typeof candidateEquation === "string" ? candidateEquation : legacyDisplayEquation?.equation;
     if ((kind === "choice" || kind === "multiple" || kind === "truefalse") &&
         (options.length < 2 || kind === "truefalse" && options.length !== 2)) return null;
     let answer = 0;
@@ -109,6 +193,7 @@ function parseQuestions(value: unknown): Question[] | null {
       id: uid(),
       kind,
       text,
+      equation,
       options: [...options],
       answer,
       answers,
@@ -116,6 +201,7 @@ function parseQuestions(value: unknown): Question[] | null {
       pairs,
       points,
       responseLines: kind === "written" && typeof rawResponseLines === "number" ? rawResponseLines : kind === "written" ? 3 : undefined,
+      showResponseLines: kind === "written" ? candidateShowResponseLines !== false : undefined,
     });
   }
   return questions;
@@ -128,11 +214,56 @@ function parseExam(value: unknown): Exam | null {
       typeof value.header.school !== "string" || typeof value.header.title !== "string" ||
       typeof value.header.subtitle !== "string" || typeof value.header.logo !== "string" ||
       !Array.isArray(value.sections) || value.sections.length > 200) return null;
+  if ((value.header.rightLogo !== undefined && typeof value.header.rightLogo !== "string") ||
+      (value.header.layout !== undefined && value.header.layout !== "institutional" && value.header.layout !== "split") ||
+      (value.header.courseCode !== undefined && typeof value.header.courseCode !== "string") ||
+      (value.header.assessment !== undefined && typeof value.header.assessment !== "string") ||
+      (value.header.academicPeriod !== undefined && typeof value.header.academicPeriod !== "string") ||
+      (value.header.date !== undefined && typeof value.header.date !== "string") ||
+      (value.header.repeatOnPages !== undefined && typeof value.header.repeatOnPages !== "boolean")) return null;
+  const rawFields = value.header.fields;
+  const legacyFieldFormat = rawFields.length > 0 && rawFields.every(item =>
+    isRecord(item) && typeof item.wide === "boolean" && item.row === undefined && item.width === undefined);
+  const currentFieldFormat = rawFields.every(item =>
+    isRecord(item) && item.wide === undefined && (item.row === 1 || item.row === 2) &&
+    typeof item.width === "number" && Number.isFinite(item.width) && item.width >= 1 && item.width <= 18);
+  if (!legacyFieldFormat && !currentFieldFormat) return null;
   const fields: HeaderField[] = [];
-  for (const item of value.header.fields) {
+  const legacyFields: { id: string; label: string; enabled: boolean; wide: boolean }[] = [];
+  for (const item of rawFields) {
     if (!isRecord(item) || typeof item.id !== "string" || typeof item.label !== "string" ||
-        typeof item.enabled !== "boolean" || typeof item.wide !== "boolean") return null;
-    fields.push({ id: item.id, label: item.label, enabled: item.enabled, wide: item.wide });
+        typeof item.enabled !== "boolean") return null;
+    if (legacyFieldFormat) {
+      if (typeof item.wide !== "boolean") return null;
+      legacyFields.push({ id: item.id, label: item.label, enabled: item.enabled, wide: item.wide });
+    } else {
+      if ((item.row !== 1 && item.row !== 2) || typeof item.width !== "number" ||
+          !Number.isFinite(item.width) || item.width < 1 || item.width > 18) return null;
+      fields.push({ id: item.id, label: item.label, enabled: item.enabled, row: item.row, width: item.width });
+    }
+  }
+  if (legacyFieldFormat) {
+    const previousLabels = ["Nombre y apellido", "RUT / identificador", "Curso", "Fecha", "Puntaje", "Nota", "Firma"];
+    const oldDefault = legacyFields.length === previousLabels.length &&
+      legacyFields.every((field, index) => field.label === previousLabels[index] && field.enabled &&
+        (field.wide === (index === 0) || field.wide === (index === 0 || index === 6)));
+    if (oldDefault) {
+      for (const field of defaultHeaderFields) {
+        const saved = legacyFields.find(item => item.label === field.label);
+        if (saved) fields.push({ ...field, id: saved.id, enabled: saved.enabled });
+      }
+    } else {
+      for (const field of legacyFields) {
+        const preset = defaultHeaderFields.find(item => item.label === field.label);
+        fields.push({
+          id: field.id,
+          label: field.label,
+          enabled: field.enabled,
+          row: preset?.row ?? (field.wide ? 1 : 2),
+          width: preset?.width ?? (field.wide ? 14 : 4.5),
+        });
+      }
+    }
   }
   const sections: Section[] = [];
   for (const item of value.sections) {
@@ -155,6 +286,13 @@ function parseExam(value: unknown): Exam | null {
       title: value.header.title,
       subtitle: value.header.subtitle,
       logo: value.header.logo,
+      rightLogo: typeof value.header.rightLogo === "string" ? value.header.rightLogo : "",
+      layout: value.header.layout === "split" ? "split" : "institutional",
+      courseCode: typeof value.header.courseCode === "string" ? value.header.courseCode : "",
+      assessment: typeof value.header.assessment === "string" ? value.header.assessment : "",
+      academicPeriod: typeof value.header.academicPeriod === "string" ? value.header.academicPeriod : "",
+      date: typeof value.header.date === "string" ? value.header.date : "",
+      repeatOnPages: typeof value.header.repeatOnPages === "boolean" ? value.header.repeatOnPages : true,
       fields,
     },
     sections,
@@ -234,6 +372,8 @@ export default function Home() {
   const [pdfPreviewUrl, setPdfPreviewUrl] = useState("");
   const [questionPickerOpen, setQuestionPickerOpen] = useState(false);
   const [minimapVisible, setMinimapVisible] = useState(true);
+  const [activeMathQuestion, setActiveMathQuestion] = useState<string | null>(null);
+  const [latexDraft, setLatexDraft] = useState("\\frac{a}{b}");
   const total = useMemo(() => exam.sections.reduce((sum, section) => sum + Math.max(0, Math.min(Number(section.pick) || 0, section.questions.length)), 0), [exam.sections]);
   const questions = exam.sections.flatMap(s => s.questions);
   useEffect(() => () => { if (pdfPreviewUrl) URL.revokeObjectURL(pdfPreviewUrl); }, [pdfPreviewUrl]);
@@ -356,14 +496,16 @@ export default function Home() {
   function updateExam(patch: Partial<Exam>) { markDirty(); setExam(current => ({ ...current, ...patch })); }
   function updateHeader(patch: Partial<ExamHeader>) { markDirty(); setExam(current => ({ ...current, header: { ...current.header, ...patch } })); }
   function updateHeaderField(id: string, patch: Partial<HeaderField>) { updateHeader({ fields: exam.header.fields.map(field => field.id === id ? { ...field, ...patch } : field) }); }
-  async function uploadLogo(file?: File) {
+  async function uploadLogo(file?: File, slot: "logo" | "rightLogo" = "logo") {
     if (!file) return;
     if (!file.type.startsWith("image/")) return setNotice("Selecciona un archivo de imagen.");
     if (file.size > 5_000_000) return setNotice("El logo debe pesar menos de 5 MB.");
     try {
       const image = new Image(); image.src = URL.createObjectURL(file); await image.decode();
       const scale = Math.min(1, 600 / image.width, 240 / image.height); const canvas = document.createElement("canvas"); canvas.width = Math.round(image.width * scale); canvas.height = Math.round(image.height * scale);
-      canvas.getContext("2d")!.drawImage(image, 0, 0, canvas.width, canvas.height); URL.revokeObjectURL(image.src); updateHeader({ logo: canvas.toDataURL("image/jpeg", 0.82) });
+      canvas.getContext("2d")!.drawImage(image, 0, 0, canvas.width, canvas.height); URL.revokeObjectURL(image.src);
+      const compressed = canvas.toDataURL("image/jpeg", 0.82);
+      updateHeader(slot === "logo" ? { logo: compressed } : { rightLogo: compressed });
     } catch { setNotice("No se pudo cargar el logo. Prueba con PNG o JPEG."); }
   }
   function updateSection(index: number, patch: Partial<Section>) {
@@ -374,9 +516,23 @@ export default function Home() {
     markDirty();
     setExam(current => ({ ...current, sections: current.sections.map((section, i) => i !== si ? section : { ...section, questions: section.questions.map((q, j) => j === qi ? { ...q, ...patch } : q) }) }));
   }
+  function toggleMathEditor(questionId: string, equation: string) {
+    if (activeMathQuestion === questionId) {
+      setActiveMathQuestion(null);
+      return;
+    }
+    setLatexDraft(equation || "\\frac{a}{b}");
+    setActiveMathQuestion(questionId);
+  }
+  function insertLatex(si: number, qi: number) {
+    const formula = latexDraft.trim();
+    if (!formula) return setNotice("Escribe una expresión LaTeX antes de insertarla.");
+    updateQuestion(si, qi, { equation: formula });
+    setActiveMathQuestion(null);
+  }
   function addQuestion(si: number, kind: QuestionKind = "choice") {
     const options = ["choice", "multiple"].includes(kind) ? ["Alternativa A", "Alternativa B", "Alternativa C", "Alternativa D"] : kind === "truefalse" ? ["Verdadero", "Falso"] : [];
-    const q: Question = { id: uid(), kind, text: "Escribe tu pregunta aquí…", options, answer: 0, answers: kind === "multiple" ? [0] : [], expected: "", pairs: kind === "matching" ? [{ left: "Concepto A", right: "Definición A" }, { left: "Concepto B", right: "Definición B" }] : [], points: 1, responseLines: 3 };
+    const q: Question = { id: uid(), kind, text: "Escribe tu pregunta aquí…", equation: "", options, answer: 0, answers: kind === "multiple" ? [0] : [], expected: "", pairs: kind === "matching" ? [{ left: "Concepto A", right: "Definición A" }, { left: "Concepto B", right: "Definición B" }] : [], points: 1, responseLines: 3, showResponseLines: kind === "written" };
     updateSection(si, { questions: [...exam.sections[si].questions, q], pick: exam.sections[si].pick + 1 });
   }
   function addSection() {
@@ -387,7 +543,7 @@ export default function Home() {
   }
   function changeQuestionKind(si: number, qi: number, kind: QuestionKind) {
     const options = ["choice", "multiple"].includes(kind) ? ["Alternativa A", "Alternativa B", "Alternativa C", "Alternativa D"] : kind === "truefalse" ? ["Verdadero", "Falso"] : [];
-    updateQuestion(si, qi, { kind, options, answer: 0, answers: kind === "multiple" ? [0] : [], expected: "", pairs: kind === "matching" ? [{ left: "Concepto A", right: "Definición A" }, { left: "Concepto B", right: "Definición B" }] : [], responseLines: 3 });
+    updateQuestion(si, qi, { kind, options, answer: 0, answers: kind === "multiple" ? [0] : [], expected: "", pairs: kind === "matching" ? [{ left: "Concepto A", right: "Definición A" }, { left: "Concepto B", right: "Definición B" }] : [], responseLines: 3, showResponseLines: kind === "written" ? true : undefined });
   }
   function deleteSection(index: number) {
     markDirty();
@@ -508,7 +664,7 @@ export default function Home() {
       return { sections, points: sections.reduce((sum, section) => sum + section.questions.reduce((n, item) => n + (Number(item.question.points) || 0), 0), 0) };
     });
   }
-  function exportForms(forms: FormPlan[], answerKey = false, styleName: PdfStyle = pdfStyle): Blob {
+  async function exportForms(forms: FormPlan[], answerKey = false, styleName: PdfStyle = pdfStyle): Promise<Blob> {
     const pdf = new jsPDF({ unit: "mm", format: "letter" });
     const style = {
       compact: { margin: 13, top: 12, bottomInset: 14, scale: 0.88, leading: 0.4, paragraphGap: 0.5, questionGap: 1, fieldRow: 6, fieldFont: 7, titleFont: 12 },
@@ -525,10 +681,45 @@ export default function Home() {
     for (let form = 0; form < forms.length; form++) {
       if (form) pdf.addPage();
       let y = top;
-      const newContentPage = () => { pdf.addPage(); y = top; };
+      let continuationHeader: (() => number) | null = null;
+      const newContentPage = () => {
+        pdf.addPage();
+        y = top;
+        if (continuationHeader) y = continuationHeader();
+      };
       const ensureSpace = (height: number) => { if (y + height > bottom && y > top) newContentPage(); };
-      const write = (text: string, size = 10, bold = false) => {
+      const write = async (text: string, size = 10, bold = false) => {
         const actualSize = size * style.scale;
+        if (containsLatexMath(text)) {
+          const canvas = await renderMathCanvas(text, width, actualSize, bold);
+          const pixelsPerMm = 2 * 96 / 25.4;
+          const heightMm = canvas.height / pixelsPerMm;
+          if (y > top && y + heightMm > bottom) newContentPage();
+          if (y + heightMm <= bottom) {
+            pdf.addImage(canvas, "PNG", left, y, width, heightMm, undefined, "FAST");
+            y += heightMm + Math.max(style.paragraphGap, actualSize * 0.2);
+            return;
+          }
+          let sourceY = 0;
+          while (sourceY < canvas.height) {
+            const availablePixels = Math.floor((bottom - y) * pixelsPerMm);
+            if (availablePixels <= 0) {
+              newContentPage();
+              continue;
+            }
+            const sliceHeight = Math.min(canvas.height - sourceY, availablePixels);
+            const slice = document.createElement("canvas");
+            slice.width = canvas.width;
+            slice.height = sliceHeight;
+            slice.getContext("2d")!.drawImage(canvas, 0, sourceY, canvas.width, sliceHeight, 0, 0, canvas.width, sliceHeight);
+            pdf.addImage(slice, "PNG", left, y, width, sliceHeight / pixelsPerMm, undefined, "FAST");
+            y += sliceHeight / pixelsPerMm;
+            sourceY += sliceHeight;
+            if (sourceY < canvas.height) newContentPage();
+          }
+          y += Math.max(style.paragraphGap, actualSize * 0.2);
+          return;
+        }
         pdf.setFont("helvetica", bold ? "bold" : "normal");
         pdf.setFontSize(actualSize);
         const lines = pdf.splitTextToSize(text, width) as string[];
@@ -543,71 +734,144 @@ export default function Home() {
         }
         y += style.paragraphGap;
       };
-      if (answerKey) {
-        write(`${exam.title} · Pauta de respuestas`, 16, true);
-        write(`Forma ${String.fromCharCode(65 + form)} · ${exam.subject} · ${exam.grade}`, 9);
-        y += style.questionGap;
-      } else {
-        const headingX = left + (exam.header.logo ? 19 : 0);
-        const headingWidth = width - (headingX - left);
-        const headingLines = [
-          { text: exam.header.school, size: 8, bold: true },
-          { text: exam.header.title || exam.title || "Prueba", size: style.titleFont, bold: true },
-          { text: exam.header.subtitle, size: 7.5, bold: false },
-        ].filter(item => item.text);
-        const logoHeight = styleName === "spacious" ? 17 : styleName === "balanced" ? 14 : 11;
-        if (exam.header.logo) {
-          try { pdf.addImage(exam.header.logo, "JPEG", left, y - 1, 16, logoHeight); }
-          catch { /* Ignore invalid image data in an imported document. */ }
-        }
-        for (const line of headingLines) {
+      const drawBlock = (
+        lines: { text: string; size: number; bold?: boolean }[],
+        x: number,
+        blockWidth: number,
+        startY: number,
+        align: "left" | "center" | "right",
+      ) => {
+        let cursor = startY;
+        for (const line of lines) {
+          if (!line.text) continue;
           const actualSize = line.size * style.scale;
-          const lineHeight = Math.max(3.2, actualSize * style.leading);
           pdf.setFont("helvetica", line.bold ? "bold" : "normal");
           pdf.setFontSize(actualSize);
-          const lines = pdf.splitTextToSize(line.text, headingWidth) as string[];
-          ensureSpace(lines.length * lineHeight);
-          pdf.text(lines, headingX, y);
-          y += lines.length * lineHeight + style.paragraphGap;
+          const wrapped = pdf.splitTextToSize(line.text, blockWidth) as string[];
+          const lineHeight = Math.max(3.2, actualSize * style.leading);
+          for (const part of wrapped) {
+            const textWidth = pdf.getTextWidth(part);
+            const textX = align === "center" ? x + (blockWidth - textWidth) / 2 : align === "right" ? x + blockWidth - textWidth : x;
+            pdf.text(part, textX, cursor);
+            cursor += lineHeight;
+          }
+          cursor += style.paragraphGap;
         }
-        if (exam.header.logo) y = Math.max(y, top + logoHeight);
-        y += style.paragraphGap;
-        write(`${exam.subject}  ·  ${exam.grade}  ·  ${exam.duration}${exam.teacher ? `  ·  ${exam.teacher}` : ""}`, 8.5);
+        return cursor;
+      };
+      const drawLogo = (source: string, x: number, imageY: number, maxWidth: number, maxHeight: number) => {
+        if (!source) return;
+        try {
+          const image = pdf.getImageProperties(source);
+          const scale = Math.min(maxWidth / image.width, maxHeight / image.height);
+          const imageWidth = image.width * scale;
+          const imageHeight = image.height * scale;
+          pdf.addImage(source, "JPEG", x + (maxWidth - imageWidth) / 2, imageY + (maxHeight - imageHeight) / 2, imageWidth, imageHeight);
+        } catch { /* Ignore invalid image data in an imported document. */ }
+      };
+      const title = exam.header.title.trim() || exam.title.trim() || "Prueba";
+      const assessment = exam.header.assessment.trim();
+      const metadata = [exam.subject, exam.header.courseCode, exam.grade, exam.header.academicPeriod, exam.header.date, exam.duration, exam.teacher]
+        .map(value => value.trim())
+        .filter((value, index, values) => value && value.toLowerCase() !== title.toLowerCase() && values.indexOf(value) === index);
+      const institutionLines = [
+        ...(exam.header.school.trim() ? [{ text: exam.header.school.trim(), size: 8, bold: true }] : []),
+        ...(exam.header.subtitle.trim() ? [{ text: exam.header.subtitle.trim(), size: 7.2 }] : []),
+      ];
+      const centeredHeading = [
+        ...(answerKey ? [{ text: assessment ? `PAUTA ${assessment}` : "PAUTA", size: 8.5, bold: true }] : assessment ? [{ text: assessment, size: 8.5, bold: true }] : []),
+        { text: title, size: style.titleFont, bold: true },
+      ];
+      const logoWidth = styleName === "spacious" ? 18 : 16;
+      const logoHeight = styleName === "spacious" ? 16 : 13;
+      const headingStart = y;
+      pdf.setTextColor(0);
+      if (exam.header.layout === "split") {
+        if (exam.header.logo) drawLogo(exam.header.logo, left, headingStart, logoWidth, logoHeight);
+        if (exam.header.rightLogo) drawLogo(exam.header.rightLogo, left + width - logoWidth, headingStart, logoWidth, logoHeight);
+        const columnGap = 6;
+        const columnWidth = (width - columnGap) / 2;
+        const leftTextX = left + (exam.header.logo ? logoWidth + 2 : 0);
+        const leftTextWidth = columnWidth - (leftTextX - left);
+        const rightTextX = left + columnWidth + columnGap;
+        const rightTextWidth = columnWidth - (exam.header.rightLogo ? logoWidth + 2 : 0);
+        const rightLines = metadata.map(text => ({ text, size: 7.1 }));
+        const leftEnd = drawBlock(institutionLines, leftTextX, leftTextWidth, headingStart, "left");
+        const rightEnd = drawBlock(rightLines, rightTextX, rightTextWidth, headingStart, "right");
+        y = Math.max(leftEnd, rightEnd) + style.paragraphGap;
+        y = drawBlock(centeredHeading, left, width, y, "center");
+      } else {
+        if (exam.header.logo) drawLogo(exam.header.logo, left, headingStart, logoWidth, logoHeight);
+        if (exam.header.rightLogo) drawLogo(exam.header.rightLogo, left + width - logoWidth, headingStart, logoWidth, logoHeight);
+        const textX = left + (exam.header.logo ? logoWidth + 2 : 0);
+        const textRight = left + width - (exam.header.rightLogo ? logoWidth + 2 : 0);
+        const textWidth = textRight - textX;
+        y = drawBlock([...institutionLines, ...centeredHeading], textX, textWidth, headingStart, "center");
+        if (metadata.length) y = drawBlock([{ text: metadata.join("  ·  "), size: 7.2 }], textX, textWidth, y, "center");
+      }
+      if (exam.header.logo || exam.header.rightLogo) y = Math.max(y, headingStart + logoHeight);
+      y += style.paragraphGap;
+      if (exam.header.repeatOnPages) {
+        const compactHeading = [
+          answerKey ? (assessment ? `Pauta ${assessment}` : "Pauta") : assessment,
+          title,
+          `Forma ${String.fromCharCode(65 + form)}`,
+        ].filter(Boolean).join(" · ");
+        continuationHeader = () => {
+          drawLogo(exam.header.logo, left, top, 9, 8);
+          drawLogo(exam.header.rightLogo, left + width - 9, top, 9, 8);
+          const textX = left + (exam.header.logo ? 11 : 0);
+          const textWidth = width - (exam.header.logo ? 11 : 0) - (exam.header.rightLogo ? 11 : 0);
+          const textEnd = drawBlock([{ text: compactHeading, size: 7.2, bold: true }], textX, textWidth, top + 4, "center");
+          const ruleY = Math.max(top + 10, textEnd);
+          pdf.setDrawColor(170);
+          pdf.line(left, ruleY, left + width, ruleY);
+          return ruleY + 4;
+        };
+      }
+      if (!answerKey) {
         const fields = exam.header.fields.filter(field => field.enabled);
-        let fieldIndex = 0;
-        while (fieldIndex < fields.length) {
+        for (const row of headerFieldRows(fields)) {
           ensureSpace(style.fieldRow);
-          const field = fields[fieldIndex];
-          const next = fields[fieldIndex + 1];
-          const pair = !field.wide && next && !next.wide;
-          const items = pair
-            ? [{ field, x: left, w: width / 2 - 3 }, { field: next!, x: left + width / 2 + 3, w: width / 2 - 3 }]
-            : [{ field, x: left, w: width }];
+          if (!row.length) {
+            y += style.fieldRow;
+            continue;
+          }
           pdf.setFont("helvetica", "normal");
           pdf.setFontSize(style.fieldFont);
           pdf.setTextColor(95);
           pdf.setDrawColor(175);
-          for (const item of items) {
-            const label = `${item.field.label}:`;
-            const labelWidth = pdf.getTextWidth(label);
-            pdf.text(label, item.x, y);
-            pdf.line(item.x + labelWidth + 2, y + 0.8, item.x + item.w, y + 0.8);
+          const labels = row.map(field => `${field.label}:`);
+          const labelWidths = labels.map(label => pdf.getTextWidth(label));
+          const gap = 2;
+          const requestedWidths = row.map(field => field.width * 10);
+          const labelAndGapWidth = labelWidths.reduce((sum, labelWidth) => sum + labelWidth + 1.5, 0) + gap * (row.length - 1);
+          const availableWritingWidth = Math.max(0, width - labelAndGapWidth);
+          const requestedWritingWidth = requestedWidths.reduce((sum, fieldWidth) => sum + fieldWidth, 0);
+          const widthScale = requestedWritingWidth ? Math.min(1, availableWritingWidth / requestedWritingWidth) : 0;
+          let x = left;
+          for (let index = 0; index < row.length; index++) {
+            pdf.text(labels[index], x, y);
+            const lineStart = x + labelWidths[index] + 1.5;
+            const lineWidth = requestedWidths[index] * widthScale;
+            if (lineWidth > 0.5) pdf.line(lineStart, y + 0.8, lineStart + lineWidth, y + 0.8);
+            x = lineStart + lineWidth + gap;
           }
-          fieldIndex += pair ? 2 : 1;
           y += style.fieldRow;
         }
-        ensureSpace(5);
-        pdf.setFont("helvetica", "bold");
-        pdf.setFontSize(8 * style.scale);
-        pdf.setTextColor(0);
-        pdf.text(`Forma ${String.fromCharCode(65 + form)}     Total: ${forms[form].points} puntos`, left, y);
-        y += 5 + style.questionGap;
       }
+      ensureSpace(5);
+      pdf.setFont("helvetica", "bold");
+      pdf.setFontSize(8 * style.scale);
+      pdf.setTextColor(0);
+      pdf.text(`Forma ${String.fromCharCode(65 + form)}     Total: ${forms[form].points} puntos`, left, y);
+      y += 5 + style.questionGap;
       let number = 0;
       for (const section of forms[form].sections) {
-        if (!answerKey) {
-          write(section.title, 13, true);
-          if (section.instructions) write(section.instructions, 9);
+        if (answerKey) await write(section.title, 11, true);
+        else {
+          await write(section.title, 13, true);
+          if (section.instructions) await write(section.instructions, 9);
         }
         for (const item of section.questions) {
           const q = item.question;
@@ -618,14 +882,19 @@ export default function Home() {
             if (q.kind === "multiple") key = (q.answers?.length ? q.answers : [q.answer]).map(index => String.fromCharCode(65 + item.optionOrder.indexOf(index))).join(", ");
             if (q.kind === "choice" || q.kind === "truefalse") key = String.fromCharCode(65 + item.optionOrder.indexOf(q.answer));
             if (q.kind === "matching") key = (q.pairs || []).map((pair, i) => `${i + 1}–${String.fromCharCode(65 + item.matchOrder.indexOf(i))}`).join(" · ");
-            write(`${number}. ${key}`, 10);
+            await write(`${number}. ${key} (${q.points} pto${q.points === 1 ? "" : "s"})`, 10);
           } else {
-            write(`${number}. ${q.text}${q.kind === "multiple" ? " (Marca todas las alternativas correctas; puede haber más de una.)" : ""} (${q.points} pto${q.points === 1 ? "" : "s"})`, 10, true);
+            await write(`${number}. ${q.text}${q.kind === "multiple" ? " (Marca todas las alternativas correctas; puede haber más de una.)" : ""} (${q.points} pto${q.points === 1 ? "" : "s"})`, 10, true);
+            if (q.equation?.trim()) {
+              y += style.questionGap;
+              await write(`\\[${q.equation.trim()}\\]`, 10);
+              y += Math.max(2, style.questionGap);
+            }
             if (q.kind === "written") {
               y += style.questionGap;
               pdf.setDrawColor(190);
               const responseLine = styleName === "spacious" ? 9 : styleName === "balanced" ? 7 : 5.5;
-              for (let line = 0; line < Math.max(1, Math.min(12, q.responseLines ?? 3)); line++) {
+              for (let line = 0; q.showResponseLines !== false && line < Math.max(1, Math.min(12, q.responseLines ?? 3)); line++) {
                 ensureSpace(responseLine);
                 pdf.line(left, y, left + width, y);
                 y += responseLine;
@@ -638,11 +907,11 @@ export default function Home() {
               y += style.fieldRow;
             } else if (q.kind === "matching") {
               const pairs = q.pairs || [];
-              write("Relaciona cada elemento de la columna A con la alternativa correcta de la columna B.", 8);
-              pairs.forEach((pair, i) => write(`${i + 1}. ${pair.left}   ______`, 9));
-              item.matchOrder.forEach((index, i) => write(`${String.fromCharCode(65 + i)}) ${pairs[index]?.right || ""}`, 9));
+              await write("Relaciona cada elemento de la columna A con la alternativa correcta de la columna B.", 8);
+              for (const [index, pair] of pairs.entries()) await write(`${index + 1}. ${pair.left}   ______`, 9);
+              for (const [index, pairIndex] of item.matchOrder.entries()) await write(`${String.fromCharCode(65 + index)}) ${pairs[pairIndex]?.right || ""}`, 9);
             } else {
-              item.optionOrder.forEach((index, i) => write(`${String.fromCharCode(65 + i)})  ${q.options[index] || ""}`, 9));
+              for (const [displayIndex, index] of item.optionOrder.entries()) await write(`${String.fromCharCode(65 + displayIndex)})  ${q.options[index] || ""}`, 9);
             }
           }
           y += style.questionGap;
@@ -672,7 +941,7 @@ export default function Home() {
     setBusy("pdf");
     try {
       const forms = planForms();
-      const blob = exportForms(forms, false, pdfStyle);
+      const blob = await exportForms(forms, false, pdfStyle);
       setGeneration({ signature: JSON.stringify(exam), forms });
       setPdfPreviewUrl(URL.createObjectURL(blob));
       setModal("export");
@@ -771,9 +1040,24 @@ export default function Home() {
       {tab === "editor" && <div className="content editor-layout"><section className="edit-column"><div className="eyebrow"><span>✦</span> CREADOR DE PRUEBAS</div><input className="exam-title" value={exam.title} onChange={e => updateExam({ title: e.target.value })} aria-label="Título de la prueba"/><div className="metadata-grid"><label>ASIGNATURA<input value={exam.subject} onChange={e => updateExam({ subject: e.target.value })}/></label><label>NIVEL / CURSO<input value={exam.grade} onChange={e => updateExam({ grade: e.target.value })}/></label><label>DOCENTE<input value={exam.teacher} placeholder="Tu nombre" onChange={e => updateExam({ teacher: e.target.value })}/></label><label>DURACIÓN<input value={exam.duration} onChange={e => updateExam({ duration: e.target.value })}/></label></div>
           <div className="section-tabs">{exam.sections.map((s, i) => <button key={s.id} className={active === i ? "section-tab selected" : "section-tab"} onClick={() => setActive(i)}>{String(i + 1).padStart(2, "0")} <span>{s.title || "Sección"}</span></button>)}<button className="add-section" onClick={addSection}>＋ Sección</button></div>
           {exam.sections[active] ? <div className="section-card" id="section-editor"><div className="section-head"><div><div className="eyebrow">SECCIÓN {String(active + 1).padStart(2, "0")}</div><input className="section-title" aria-label="Título de la sección" value={exam.sections[active].title} onChange={e => updateSection(active, { title: e.target.value })}/></div><button type="button" className="icon-btn danger-icon" title="Eliminar sección" aria-label="Eliminar sección" onClick={() => deleteSection(active)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5" /></svg></button></div><textarea className="instructions" aria-label="Instrucciones de la sección" value={exam.sections[active].instructions} onChange={e => updateSection(active, { instructions: e.target.value })} placeholder="Instrucciones para esta sección"/><div className="pick-row"><span>Preguntas disponibles <b>{exam.sections[active].questions.length}</b></span><label>{exam.variants > 1 ? "Preguntas por forma" : "Preguntas incluidas"} <input type="number" min="0" max={exam.sections[active].questions.length} value={Math.max(0, Math.min(exam.sections[active].pick ?? 0, exam.sections[active].questions.length))} onChange={e => updateSection(active, { pick: Math.max(0, Math.min(Number(e.target.value) || 0, exam.sections[active].questions.length)) })} /></label></div>
-            {exam.sections[active].questions.map((q, qi) => <article className="question-card" key={q.id}>
+            {exam.sections[active].questions.map((q, qi) => <article className="question-card" key={q.id} data-include-response-lines={q.showResponseLines !== false}>
               <div className="question-toolbar"><select aria-label="Tipo de pregunta" value={q.kind} onChange={e => changeQuestionKind(active, qi, e.target.value as QuestionKind)}>{questionTypes.map(type => <option key={type.kind} value={type.kind}>{type.label}</option>)}</select><label className="points">Puntaje <input type="number" min="0" value={q.points} onChange={e => updateQuestion(active, qi, { points: Math.max(0, Number(e.target.value) || 0) })}/></label><button className="delete-q" title="Eliminar pregunta" aria-label="Eliminar pregunta" onClick={() => { const section = exam.sections[active]; const questions = section.questions.filter((_, i) => i !== qi); updateSection(active, { questions, pick: Math.min(section.pick, questions.length) }); }}>×</button></div>
-              <textarea className="question-prompt" aria-label="Enunciado de la pregunta" value={q.text} onChange={e => updateQuestion(active, qi, { text: e.target.value })} placeholder={q.kind === "fill" ? "Incluye ____ por cada espacio que deben completar" : "Escribe el enunciado de la pregunta"}/>
+              <textarea className="question-prompt" aria-label="Enunciado de la pregunta" value={q.text} onChange={event => updateQuestion(active, qi, { text: event.target.value })} placeholder={q.kind === "fill" ? "Incluye ____ por cada espacio que deben completar" : "Escribe el enunciado de la pregunta"}/>
+              <div className="question-math-controls">
+                <button type="button" className="btn ghost math-editor-toggle" aria-expanded={activeMathQuestion === q.id} onClick={() => toggleMathEditor(q.id, q.equation || "")}>∑ Editor de ecuaciones</button>
+                <span>Soporta LaTeX entre <code>{"\\(…\\)"}</code>, <code>{"\\[…\\]"}</code>, <code>$…$</code> o <code>$$…$$</code>.</span>
+              </div>
+              {containsLatexMath(q.text) && <div className="math-render-preview question-math-preview" role="region" aria-label="Vista previa de ecuaciones" dangerouslySetInnerHTML={{ __html: renderMathMarkup(q.text) }}/>}
+              {q.equation?.trim() && <div className="math-render-preview question-math-preview" role="region" aria-label="Vista previa de la ecuación de la pregunta" dangerouslySetInnerHTML={{ __html: renderMathMarkup(`\\[${q.equation.trim()}\\]`) }}/>}
+              {activeMathQuestion === q.id && <div className="math-editor-panel">
+                <label className="math-editor-label" htmlFor={`latex-${q.id}`}>Expresión LaTeX
+                  <textarea id={`latex-${q.id}`} aria-label="Expresión LaTeX" value={latexDraft} onChange={event => setLatexDraft(event.target.value)} placeholder="\\frac{a}{b}"/>
+                </label>
+                <div className="math-snippets" aria-label="Plantillas matemáticas">{mathSnippets.map(snippet => <button type="button" className="btn ghost" key={snippet.label} onClick={() => setLatexDraft(current => `${current}${current ? "\n" : ""}${snippet.latex}`)}>{snippet.label}</button>)}</div>
+                <div className="math-render-preview math-editor-preview" role="region" aria-label="Vista previa de la ecuación" dangerouslySetInnerHTML={{ __html: renderMathMarkup(`\\[${latexDraft}\\]`) }}/>
+                <div className="math-editor-footer"><span>La ecuación se guardará en un campo separado del enunciado.</span><button type="button" className="btn primary" onClick={() => insertLatex(active, qi)}>{q.equation ? "Actualizar ecuación" : "Insertar ecuación"}</button></div>
+              </div>}
+              {q.kind === "written" && <div className="question-extra response-lines-control"><label className="response-lines-toggle"><input type="checkbox" aria-label="Incluir líneas de respuesta en el PDF" checked={q.showResponseLines !== false} onChange={event => updateQuestion(active, qi, { showResponseLines: event.target.checked })}/> Incluir líneas en PDF</label>{q.showResponseLines === false && <div className="written-hint">La respuesta se imprimirá sin líneas.</div>}</div>}
               {q.kind === "written" ? <div className="question-extra"><label>Líneas para responder <input type="number" min="1" max="12" value={Math.max(1, Math.min(12, q.responseLines ?? 3))} onChange={e => updateQuestion(active, qi, { responseLines: Math.max(1, Math.min(12, Number(e.target.value) || 1)) })}/></label><div className="written-hint">☷ &nbsp; Espacio de respuesta en el PDF</div></div> :
               q.kind === "fill" ? <label className="expected-answer">Respuesta esperada (solo pauta)<input value={q.expected || ""} onChange={e => updateQuestion(active, qi, { expected: e.target.value })} placeholder="Escribe la respuesta correcta"/></label> :
               q.kind === "matching" ? <div className="pairs-list"><div className="eyebrow">PAREJAS · LA COLUMNA B SE MEZCLA EN CADA FORMA</div>{(q.pairs || []).map((pair, pi) => <div className="pair-row" key={pi}><span>{pi + 1}.</span><input aria-label={`Elemento ${pi + 1} de columna A`} value={pair.left} onChange={e => updateQuestion(active, qi, { pairs: q.pairs?.map((p, i) => i === pi ? { ...p, left: e.target.value } : p) })}/><input aria-label={`Elemento ${pi + 1} de columna B`} value={pair.right} onChange={e => updateQuestion(active, qi, { pairs: q.pairs?.map((p, i) => i === pi ? { ...p, right: e.target.value } : p) })}/><button className="option-delete" aria-label="Eliminar pareja" disabled={(q.pairs || []).length <= 1} onClick={() => updateQuestion(active, qi, { pairs: q.pairs?.filter((_, i) => i !== pi) })}>×</button></div>)}<button className="add-option" onClick={() => updateQuestion(active, qi, { pairs: [...(q.pairs || []), { left: `Concepto ${(q.pairs || []).length + 1}`, right: `Definición ${(q.pairs || []).length + 1}` }] })}>＋ Añadir pareja</button></div> :
@@ -785,7 +1069,115 @@ export default function Home() {
           </div> : <div className="empty-card">Crea una sección para comenzar.</div>}
           <div className="lower-actions"><button className="btn ghost" onClick={() => setTab("header")}>▧ Diseñar encabezado</button><button className="btn ghost" onClick={shareBank}>↗ Compartir banco</button><button className="btn ghost" onClick={exportQuestions}>↓ Exportar preguntas JSON</button><label className="btn ghost import-label">↑ Importar preguntas<input type="file" accept="application/json,.json" onChange={importFile}/></label></div>
         </section><aside className="minimap-column" hidden={!minimapVisible}><div className="minimap-head"><div className="eyebrow">ESTRUCTURA</div><h3>Mapa de contenido</h3><p>Navega por secciones y revisa cuántas preguntas entran en cada forma.</p></div><div className="minimap-stats"><span><b>{exam.sections.length}</b> secciones</span><span><b>{total}</b> preguntas incluidas</span></div><nav className="minimap-sections" aria-label="Secciones de la prueba">{exam.sections.map((section, index) => { const included = Math.max(0, Math.min(Number(section.pick) || 0, section.questions.length)); return <button type="button" key={section.id} className={active === index ? "minimap-section active" : "minimap-section"} onClick={() => { setActive(index); document.getElementById("section-editor")?.scrollIntoView({ behavior: "smooth", block: "start" }); }}><span className="minimap-number">{String(index + 1).padStart(2, "0")}</span><span className="minimap-copy"><b>{section.title || `Sección ${index + 1}`}</b><small>{included} de {section.questions.length} preguntas</small><span className="minimap-meter"><i style={{ width: `${section.questions.length ? included / section.questions.length * 100 : 0}%` }} /></span></span></button>; })}</nav><div className="minimap-footer"><span>Banco: {questions.length} preguntas</span><span>Configuración: {exam.variants} forma{exam.variants === 1 ? "" : "s"}</span></div></aside></div>}
-      {tab === "header" && <div className="content editor-layout"><section className="edit-column"><div className="eyebrow"><span>✦</span> DISEÑO DE LA PRUEBA</div><h1 className="page-title">Personaliza el encabezado</h1><p className="page-description">Adapta la primera parte de la hoja al formato de tu colegio. Los cambios se aplican a todas las formas.</p><div className="header-config-card"><div className="eyebrow">IDENTIDAD DEL ESTABLECIMIENTO</div><div className="logo-row">{exam.header.logo ? <img className="logo-thumb" src={exam.header.logo} alt="Vista previa del logo"/> : <div className="logo-placeholder">▧</div>}<div className="logo-upload"><b>Logo o insignia</b><span>Se ajusta automáticamente · JPG o PNG, máximo 5 MB</span><label className="btn ghost">{exam.header.logo ? "Cambiar logo" : "＋ Subir logo"}<input type="file" accept="image/png,image/jpeg,image/webp" onChange={e => uploadLogo(e.target.files?.[0])}/></label></div>{exam.header.logo && <button className="remove-logo" onClick={() => updateHeader({ logo: "" })}>Quitar</button>}</div><label className="header-label">NOMBRE DEL ESTABLECIMIENTO<input value={exam.header.school} onChange={e => updateHeader({ school: e.target.value })} placeholder="Ej. Escuela Básica Los Aromos"/></label><div className="header-divider"/><div className="eyebrow">TÍTULOS IMPRESOS</div><label className="header-label">TÍTULO PRINCIPAL<input value={exam.header.title} onChange={e => updateHeader({ title: e.target.value })} placeholder={exam.title || "Usar el título de la prueba"}/><small>Si lo dejas vacío, se imprime el título de la prueba.</small></label><label className="header-label">SUBTÍTULO O TEXTO INSTITUCIONAL<input value={exam.header.subtitle} onChange={e => updateHeader({ subtitle: e.target.value })} placeholder="Ej. Departamento de Ciencias · Año 2026"/></label><div className="header-divider"/><div className="header-fields-head"><div><div className="eyebrow">ESPACIOS PARA COMPLETAR</div><span>Activa, renombra y ordena los campos de identificación y calificación.</span></div></div><div className="header-fields">{exam.header.fields.map(field => <div className={field.enabled ? "header-field" : "header-field disabled"} key={field.id}><input aria-label={`Mostrar ${field.label}`} type="checkbox" checked={field.enabled} onChange={e => updateHeaderField(field.id, { enabled: e.target.checked })}/><input className="field-name" aria-label={`Nombre del campo ${field.label}`} value={field.label} onChange={e => updateHeaderField(field.id, { label: e.target.value })}/><label className="wide-toggle"><input type="checkbox" checked={field.wide} onChange={e => updateHeaderField(field.id, { wide: e.target.checked })}/> Línea completa</label><button className="option-delete" title="Eliminar campo" aria-label="Eliminar campo" onClick={() => updateHeader({ fields: exam.header.fields.filter(item => item.id !== field.id) })}>×</button></div>)}</div><button className="add-option add-header-field" onClick={() => updateHeader({ fields: [...exam.header.fields, { id: uid(), label: "Nuevo campo", enabled: true, wide: false }] })}>＋ Añadir espacio</button><div className="header-help">Los espacios aparecen en la hoja como líneas para escribir a mano. Por ejemplo: nombre, RUT, puntaje, nota o firma.</div></div><div className="lower-actions"><button className="btn ghost" onClick={() => setTab("editor")}>← Volver al contenido</button></div></section><div className="header-export-note"><div><b>Previsualización del documento</b><span>Usa la vista previa de exportación para ver el PDF real y ajustar su densidad.</span></div><button className="btn primary" onClick={printPdf}>Vista previa y estilos PDF</button></div></div>}
+      {tab === "header" && <div className="content editor-layout header-editor-layout">
+        <section className="edit-column">
+          <div className="eyebrow"><span>✦</span> DISEÑO DE LA PRUEBA</div>
+          <h1 className="page-title">Personaliza el encabezado</h1>
+          <p className="page-description">Crea un encabezado universitario o institucional, con metadatos reales, dos logos opcionales y una vista previa en vivo.</p>
+          <div className="header-config-card">
+            <div className="eyebrow">DISTRIBUCIÓN</div>
+            <label className="header-label">ESTILO DE IMPRESIÓN
+              <select value={exam.header.layout} onChange={event => updateHeader({ layout: event.target.value as HeaderLayout })}>
+                <option value="institutional">Institucional centrado</option>
+                <option value="split">Bloques académicos a dos columnas</option>
+              </select>
+              <small>Elige entre logos y título centrados o datos institucionales y académicos enfrentados.</small>
+            </label>
+            <label className="header-repeat-option">
+              <input type="checkbox" checked={exam.header.repeatOnPages} onChange={event => updateHeader({ repeatOnPages: event.target.checked })}/>
+              <span><b>Repetir encabezado compacto</b><small>Identifica la prueba en las páginas siguientes.</small></span>
+            </label>
+            <div className="header-divider"/>
+            <div className="eyebrow">IDENTIDAD INSTITUCIONAL</div>
+            <div className="header-logos-grid">
+              <div className="logo-row">
+                {exam.header.logo ? <img className="logo-thumb" src={exam.header.logo} alt="Logo institucional izquierdo"/> : <div className="logo-placeholder" aria-hidden="true">▧</div>}
+                <div className="logo-upload">
+                  <b>Logo izquierdo</b><span>Se comprime en el navegador · máximo 5 MB</span>
+                  <label className="btn ghost">{exam.header.logo ? "Cambiar logo" : "＋ Subir logo"}<input type="file" accept="image/png,image/jpeg,image/webp" onChange={event => { const file = event.target.files?.[0]; event.target.value = ""; void uploadLogo(file, "logo"); }}/></label>
+                </div>
+                {exam.header.logo && <button className="remove-logo" onClick={() => updateHeader({ logo: "" })}>Quitar</button>}
+              </div>
+              <div className="logo-row">
+                {exam.header.rightLogo ? <img className="logo-thumb" src={exam.header.rightLogo} alt="Logo institucional derecho"/> : <div className="logo-placeholder" aria-hidden="true">▧</div>}
+                <div className="logo-upload">
+                  <b>Logo derecho (opcional)</b><span>Útil para facultad, carrera o unidad académica</span>
+                  <label className="btn ghost">{exam.header.rightLogo ? "Cambiar logo" : "＋ Subir logo"}<input type="file" accept="image/png,image/jpeg,image/webp" onChange={event => { const file = event.target.files?.[0]; event.target.value = ""; void uploadLogo(file, "rightLogo"); }}/></label>
+                </div>
+                {exam.header.rightLogo && <button className="remove-logo" onClick={() => updateHeader({ rightLogo: "" })}>Quitar</button>}
+              </div>
+            </div>
+            <label className="header-label">UNIVERSIDAD O ESTABLECIMIENTO
+              <input value={exam.header.school} onChange={event => updateHeader({ school: event.target.value })} placeholder="Ej. Universidad de Santiago de Chile"/>
+            </label>
+            <label className="header-label">FACULTAD, DEPARTAMENTO O UNIDAD
+              <input value={exam.header.subtitle} onChange={event => updateHeader({ subtitle: event.target.value })} placeholder="Ej. Facultad de Ciencia · Departamento de Matemática"/>
+            </label>
+            <div className="header-divider"/>
+            <div className="eyebrow">DATOS DE LA EVALUACIÓN</div>
+            <div className="header-data-grid">
+              <label className="header-label">EVALUACIÓN
+                <input value={exam.header.assessment} onChange={event => updateHeader({ assessment: event.target.value })} placeholder="PEP 1, Control 2, Examen"/>
+              </label>
+              <label className="header-label">CÓDIGO DEL RAMO
+                <input value={exam.header.courseCode} onChange={event => updateHeader({ courseCode: event.target.value })} placeholder="10101 · M6"/>
+              </label>
+              <label className="header-label">SEMESTRE O PERÍODO
+                <input value={exam.header.academicPeriod} onChange={event => updateHeader({ academicPeriod: event.target.value })} placeholder="Primer semestre 2026"/>
+              </label>
+              <label className="header-label">FECHA IMPRESA
+                <input value={exam.header.date} onChange={event => updateHeader({ date: event.target.value })} placeholder="12 de noviembre de 2026"/>
+              </label>
+            </div>
+            <label className="header-label">TÍTULO PRINCIPAL
+              <input value={exam.header.title} onChange={event => updateHeader({ title: event.target.value })} placeholder={exam.title || "Usar el título de la prueba"}/>
+              <small>Si lo dejas vacío, se imprime el título general de la prueba.</small>
+            </label>
+            <div className="header-divider"/>
+            <div className="header-fields-head"><div><div className="eyebrow">ESPACIOS PARA COMPLETAR</div><span>Activa, renombra y ordena los campos de identificación y calificación.</span></div></div>
+            <div className="header-fields">{exam.header.fields.map(field => <div className={field.enabled ? "header-field" : "header-field disabled"} key={field.id}>
+              <input aria-label={`Mostrar ${field.label}`} type="checkbox" checked={field.enabled} onChange={event => updateHeaderField(field.id, { enabled: event.target.checked })}/>
+              <input className="field-name" aria-label={`Nombre del campo ${field.label}`} value={field.label} onChange={event => updateHeaderField(field.id, { label: event.target.value })}/>
+              <label className="field-setting">Fila
+                <select aria-label={`Fila del campo ${field.label}`} value={field.row} onChange={event => updateHeaderField(field.id, { row: Number(event.target.value) as HeaderFieldRow })}>
+                  <option value={1}>1</option><option value={2}>2</option>
+                </select>
+              </label>
+              <label className="field-setting">Ancho (cm)
+                <input type="number" min={1} max={18} step={0.5} aria-label={`Ancho para escribir en ${field.label} (cm)`} value={field.width} onChange={event => { const value = Number(event.target.value); updateHeaderField(field.id, { width: Number.isFinite(value) ? Math.max(1, Math.min(18, value)) : 1 }); }}/>
+              </label>
+              <button className="option-delete" title="Eliminar campo" aria-label="Eliminar campo" onClick={() => updateHeader({ fields: exam.header.fields.filter(item => item.id !== field.id) })}>×</button>
+            </div>)}</div>
+            <button className="add-option add-header-field" onClick={() => updateHeader({ fields: [...exam.header.fields, { id: uid(), label: "Nuevo campo", enabled: true, row: 2, width: 4.5 }] })}>＋ Añadir espacio</button>
+            <div className="header-help">Por defecto, nombre, fecha y nota van en la primera fila; RUT, curso y puntaje en la segunda. Ajusta fila y ancho de escritura por campo.</div>
+          </div>
+          <div className="lower-actions"><button className="btn ghost" onClick={() => setTab("editor")}>← Volver al contenido</button></div>
+        </section>
+        <aside className="header-preview-column" aria-label="Vista previa del encabezado">
+          <div className="header-preview-card">
+            <div className="eyebrow">VISTA PREVIA EN VIVO</div>
+            <div className={`header-live-preview ${exam.header.layout}`}>
+              <div className="header-live-top">
+                {exam.header.logo ? <img src={exam.header.logo} alt=""/> : <span className="header-live-logo-placeholder">LOGO</span>}
+                {exam.header.layout === "institutional" ? <div className="header-live-institution"><b>{exam.header.school || "Universidad o establecimiento"}</b><span>{exam.header.subtitle || "Facultad · departamento · unidad"}</span></div> : <span className="header-live-logo-gap"/>}
+                {exam.header.rightLogo ? <img src={exam.header.rightLogo} alt=""/> : <span className="header-live-logo-placeholder">LOGO</span>}
+              </div>
+              {exam.header.layout === "split" && <div className="header-live-split">
+                <div><b>{exam.header.school || "Universidad o establecimiento"}</b><span>{exam.header.subtitle || "Facultad · departamento · unidad"}</span></div>
+                <div><b>{[exam.subject, exam.header.courseCode].filter(Boolean).join(" · ") || "Asignatura · código"}</b><span>{[exam.grade, exam.header.academicPeriod, exam.header.date].filter(Boolean).join(" · ") || "Nivel · período · fecha"}</span></div>
+              </div>}
+              <div className="header-live-title">
+                {(exam.header.assessment || "PEP / evaluación") && <b>{exam.header.assessment || "PEP / evaluación"}</b>}
+                <strong>{exam.header.title || exam.title || "Título de la prueba"}</strong>
+                {exam.header.layout === "institutional" && <span>{[exam.subject, exam.header.courseCode, exam.grade, exam.header.academicPeriod, exam.header.date].filter(Boolean).join(" · ") || "Asignatura · código · período · fecha"}</span>}
+              </div>
+              <div className="header-live-fields">{headerFieldRows(exam.header.fields.filter(field => field.enabled)).map((row, rowIndex) => <div className="header-live-field-row" key={rowIndex}>{row.map(field => <span style={{ flexGrow: field.width * 10 + field.label.length }} key={field.id}>{field.label}: <i aria-hidden="true"/></span>)}</div>)}</div>
+            </div>
+            <div className="header-preview-caption">{exam.header.repeatOnPages ? "El identificador compacto se repetirá en las páginas siguientes." : "El encabezado completo aparecerá en la primera página de cada forma."}</div>
+          </div>
+          <div className="header-export-note"><div><b>Revisa el PDF real</b><span>Comprueba saltos de página, densidad y campos antes de imprimir.</span></div><button className="btn primary" onClick={printPdf}>Vista previa PDF</button></div>
+        </aside>
+      </div>}
       {tab === "history" && <div className="content page-content"><div className="page-heading"><div><div className="eyebrow">TU BIBLIOTECA</div><h1>Mis pruebas</h1><p>Tus documentos se guardan como datos y se regeneran al exportar.</p></div><button className="btn primary" onClick={startNewExam}>＋ Nueva prueba</button></div>{!user ? <div className="empty-card">Inicia sesión para guardar y consultar tus pruebas.<button className="btn primary" onClick={() => setModal("auth")}>Iniciar sesión</button></div> : historyLoading ? <div className="empty-card" role="status">Cargando tu historial…</div> : historyError ? <div className="empty-card history-error" role="alert">{historyError}<button className="btn ghost" onClick={loadHistory}>Reintentar</button></div> : history.length ? <div className="history-grid">{history.map(item => <article className="history-card" key={item.id}><div className="doc-icon">▤</div><div className="history-info"><b>{item.title}</b><span>{new Date(item.updated_at).toLocaleDateString("es-CL")} · {item.data?.sections?.flatMap((s: Section) => s.questions).length || 0} preguntas</span></div><button onClick={() => restore(item)}>Abrir →</button></article>)}</div> : <div className="empty-card">Todavía no tienes pruebas guardadas. Crea una y pulsa Guardar.</div>}</div>}
       {tab === "bank" && <div className="content page-content"><div className="page-heading"><div><div className="eyebrow">COMUNIDAD DOCENTE</div><h1>Banco de preguntas</h1><p>Publica la prueba actual o añade preguntas de un banco directamente a esta prueba.</p></div><button className="btn primary" onClick={() => { setTab("editor"); shareBank(); }}>↗ Compartir selección</button></div><div className="bank-feature"><div className="bank-art">✳</div><div><div className="eyebrow">PRUEBA ACTUAL</div><h2>{exam.title}</h2><p>{questions.length} preguntas · {exam.subject || "Sin asignatura"}</p><button className="btn primary" onClick={shareBank}>Publicar como banco</button></div></div><section className="bank-library" aria-labelledby="bank-library-title"><div className="bank-library-heading"><div><div className="eyebrow">USAR DURANTE LA CREACIÓN</div><h2 id="bank-library-title">Añadir preguntas a la prueba</h2><p>Elige un banco publicado o pega un enlace. Sus preguntas se incorporan a la sección activa «{exam.sections[active]?.title || "Sección"}»; el resto de la prueba se conserva.</p></div><button className="btn ghost" onClick={() => setTab("editor")}>Volver al editor</button></div><form className="bank-link-form" onSubmit={submitBankLink}><label htmlFor="shared-bank-link">Enlace compartido o UUID del banco<input id="shared-bank-link" type="text" required value={bankLink} onChange={event => setBankLink(event.target.value)} placeholder="https://tu-dominio.cl/?banco=…"/></label><button className="btn primary" disabled={busy !== ""}>{busy === "bank" ? "Añadiendo…" : "Añadir por enlace"}</button></form>{!user ? <div className="empty-card bank-library-state">Inicia sesión para ver tus bancos publicados. Puedes añadir un enlace compartido arriba.<button className="btn ghost" onClick={() => setModal("auth")}>Iniciar sesión</button></div> : banksLoading ? <div className="empty-card bank-library-state" role="status">Cargando tus bancos publicados…</div> : banksError ? <div className="empty-card bank-library-state" role="alert">{banksError}<button className="btn ghost" onClick={() => void loadBanks()}>Reintentar</button></div> : banks.length ? <ul className="bank-list">{banks.map(bank => <li className="bank-list-item" key={bank.id}><div className="bank-list-info"><b>{bank.title}</b><span>Publicado el {new Date(bank.created_at).toLocaleDateString("es-CL")}</span></div><button className="btn ghost" disabled={busy !== ""} onClick={() => void importBankById(bank.id)}>{busy === "bank" ? "Añadiendo…" : "Añadir a esta prueba"}</button></li>)}</ul> : <div className="empty-card bank-library-state">Todavía no tienes bancos publicados. Comparte una prueba para poder reutilizarla aquí.</div>}</section></div>}
     </section>
