@@ -4,6 +4,22 @@ export const runtime = "nodejs";
 
 const MAX_BODY_BYTES = 500_000;
 
+export async function GET(request: Request) {
+  const auth = serverSupabase(request);
+  if (!auth) return NextResponse.json({ error: "Inicia sesión para ver tus bancos." }, { status: 401 });
+  const { client: supabase, getUser } = auth;
+  const { data: { user } } = await getUser();
+  if (!user) return NextResponse.json({ error: "Sesión no válida." }, { status: 401 });
+  const { data, error } = await supabase.from("banks")
+    .select("id,title,created_at")
+    .eq("user_id", user.id)
+    .order("created_at", { ascending: false })
+    .limit(50);
+  return error
+    ? NextResponse.json({ error: "No se pudieron cargar tus bancos." }, { status: 500 })
+    : NextResponse.json({ banks: data });
+}
+
 export async function POST(request: Request) {
   const auth = serverSupabase(request);
   if (!auth) return NextResponse.json({ error: "Inicia sesión para compartir." }, { status: 401 });

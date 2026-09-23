@@ -17,6 +17,7 @@ type FormPlan = { sections: { title: string; instructions: string; questions: Pl
 type Generation = { signature: string; forms: FormPlan[] };
 type User = { id: string; email: string; user_metadata?: { full_name?: string } };
 type SavedDocument = { id: string; title: string; updated_at: string; data: Exam };
+type SavedBank = { id: string; title: string; created_at: string };
 const fresh = (): Exam => ({
   title: "Nueva prueba",
   subject: "",
@@ -171,6 +172,40 @@ function parseHistory(value: unknown): SavedDocument[] | null {
   }
   return documents;
 }
+function parseBanks(value: unknown): SavedBank[] | null {
+  if (!Array.isArray(value) || value.length > 50) return null;
+  const banks: SavedBank[] = [];
+  for (const item of value) {
+    if (!isRecord(item) || typeof item.id !== "string" || typeof item.title !== "string" ||
+        typeof item.created_at !== "string" || !Number.isFinite(Date.parse(item.created_at))) return null;
+    banks.push({ id: item.id, title: item.title, created_at: item.created_at });
+  }
+  return banks;
+}
+const bankIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+function parseBankId(value: string): string | null {
+  const input = value.trim();
+  if (!input) return null;
+  try {
+    const id = new URL(input, window.location.origin).searchParams.get("banco") ?? input;
+    return bankIdPattern.test(id) ? id : null;
+  } catch {
+    return bankIdPattern.test(input) ? input : null;
+  }
+}
+async function getSharedBank(id: string): Promise<{ title: string; questions: Question[] }> {
+  const response = await fetch(`/api/banks/${encodeURIComponent(id)}`);
+  const result: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    const message = isRecord(result) && typeof result.error === "string" ? result.error : "El enlace no está disponible.";
+    throw new Error(message);
+  }
+  if (!isRecord(result)) throw new Error("La respuesta del banco no tiene un formato válido.");
+  const questions = parseQuestions(result.questions);
+  if (!questions?.length) throw new Error("El banco no contiene preguntas válidas.");
+  const title = typeof result.title === "string" && result.title.trim() ? result.title : "Preguntas importadas";
+  return { title, questions };
+}
 
 export default function Home() {
   const [exam, setExam] = useState<Exam>(fresh);
@@ -186,6 +221,10 @@ export default function Home() {
   const [history, setHistory] = useState<SavedDocument[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState("");
+  const [banks, setBanks] = useState<SavedBank[]>([]);
+  const [banksLoading, setBanksLoading] = useState(false);
+  const [banksError, setBanksError] = useState("");
+  const [bankLink, setBankLink] = useState("");
   const [docId, setDocId] = useState<string | undefined>();
   const [notice, setNotice] = useState(""); const [busy, setBusy] = useState(""); const [shareUrl, setShareUrl] = useState("");
   const [lastSaved, setLastSaved] = useState("");
@@ -259,41 +298,44 @@ export default function Home() {
       setHistoryLoading(false);
     }
   }, [user, token]);
+  const loadBanks = useCallback(async () => {
+    if (!user) { setBanks([]); setBanksError(""); return; }
+    setBanksLoading(true);
+    setBanksError("");
+    try {
+      const response = await fetch("/api/banks", { headers: { Authorization: `Bearer ${await token()}` } });
+      const result: unknown = await response.json().catch(() => null);
+      if (!response.ok) throw new Error("No se pudieron cargar tus bancos.");
+      const savedBanks = isRecord(result) ? parseBanks(result.banks) : null;
+      if (!savedBanks) throw new Error("La lista de bancos tiene un formato no válido.");
+      setBanks(savedBanks);
+    } catch {
+      setBanksError("No se pudieron cargar tus bancos. Comprueba tu conexión e inténtalo de nuevo.");
+    } finally {
+      setBanksLoading(false);
+    }
+  }, [user, token]);
   useEffect(() => { const client = supabase(); client.auth.getUser().then(({ data }) => setUser(data.user as User | null)); const { data: listener } = client.auth.onAuthStateChange((_event, session) => setUser(session?.user as User | null)); return () => listener.subscription.unsubscribe(); }, []);
   useEffect(() => { loadHistory(); }, [loadHistory]);
+  useEffect(() => { if (tab === "bank") void loadBanks(); }, [tab, loadBanks]);
   useEffect(() => {
-    const id = new URLSearchParams(location.search).get("banco");
-    if (!id) return;
-    const bankId: string = id;
+    const bankId = new URLSearchParams(location.search).get("banco");
+    if (!bankId) return;
     let cancelled = false;
-    async function importSharedBank() {
+    async function importSharedBank(id: string) {
       setNotice("Cargando banco compartido…");
       try {
-        const response = await fetch(`/api/banks/${encodeURIComponent(bankId)}`);
-        const data: unknown = await response.json().catch(() => null);
-        if (!response.ok) {
-          const message = isRecord(data) && typeof data.error === "string" ? data.error : "El enlace no está disponible.";
-          throw new Error(message);
-        }
-        if (!isRecord(data)) throw new Error("La respuesta del banco no tiene un formato válido.");
-        const imported = parseQuestions(data.questions);
-        if (!imported?.length) throw new Error("El banco no contiene preguntas válidas.");
+        const bank = await getSharedBank(id);
         if (cancelled) return;
-        const title = typeof data.title === "string" && data.title.trim() ? data.title : "Preguntas importadas";
-        confirmDiscard(() => {
-          setExam(current => ({ ...current, sections: [{ id: uid(), title, instructions: "Banco importado", pick: imported.length, questions: imported }] }));
-          setDocId(undefined);
-          setIsDirty(true);
-          setLastSaved("");
-          setActive(0);
-          setNotice(`Banco «${title}» importado. Revisa las preguntas y guarda tu prueba.`);
-          window.history.replaceState(null, "", "/");
-        });
+        const targetSectionId = exam.sections[active]?.id;
+        if (!targetSectionId) throw new Error("Selecciona una sección para importar.");
+        addBankQuestions(bank.title, bank.questions, targetSectionId);
+        window.history.replaceState(null, "", "/");
       } catch (error) {
         if (!cancelled) setNotice(`No se pudo importar el banco compartido: ${error instanceof Error ? error.message : "enlace no disponible."}`);
       }
     }
-    void importSharedBank();
+    void importSharedBank(bankId);
     return () => { cancelled = true; };
   }, []);
 
@@ -399,11 +441,63 @@ export default function Home() {
       if (!response.ok || typeof id !== "string") throw new Error("No se pudo crear el banco.");
       setShareUrl(`${location.origin}/?banco=${id}`);
       setModal("share");
+      void loadBanks();
     } catch {
       setNotice("No se pudo compartir el banco. Comprueba tu conexión e inténtalo de nuevo.");
     } finally {
       setBusy("");
     }
+  }
+  function addBankQuestions(title: string, imported: Question[], targetSectionId: string) {
+    const targetIndex = exam.sections.findIndex(section => section.id === targetSectionId);
+    const targetSection = exam.sections[targetIndex];
+    const fallbackSection: Section = { id: uid(), title, instructions: "Banco importado", pick: imported.length, questions: imported };
+    markDirty();
+    setExam(current => {
+      const index = current.sections.findIndex(section => section.id === targetSectionId);
+      if (index < 0) return { ...current, sections: [...current.sections, fallbackSection] };
+      const section = current.sections[index];
+      const questions = [...section.questions, ...imported];
+      return {
+        ...current,
+        sections: current.sections.map((item, itemIndex) => itemIndex !== index ? item : {
+          ...section,
+          title: !section.questions.length && /^Sección \d+$/i.test(section.title.trim()) ? title : section.title,
+          questions,
+          pick: Math.min(section.pick + imported.length, questions.length),
+        }),
+      };
+    });
+    setActive(targetIndex >= 0 ? targetIndex : exam.sections.length);
+    setGeneration(null);
+    setTab("editor");
+    const destination = targetSection && !targetSection.questions.length && /^Sección \d+$/i.test(targetSection.title.trim())
+      ? title
+      : targetSection?.title || "la nueva sección";
+    const countMessage = imported.length === 1 ? "Se añadió 1 pregunta" : `Se añadieron ${imported.length} preguntas`;
+    setNotice(`${countMessage} de «${title}» a «${destination}».`);
+  }
+  async function importBankById(id: string) {
+    if (busy) return;
+    const targetSectionId = exam.sections[active]?.id;
+    if (!targetSectionId) { setNotice("Selecciona una sección antes de añadir preguntas."); return; }
+    setBusy("bank");
+    setNotice("");
+    try {
+      const bank = await getSharedBank(id);
+      addBankQuestions(bank.title, bank.questions, targetSectionId);
+      setBankLink("");
+    } catch (error) {
+      setNotice(`No se pudo importar el banco: ${error instanceof Error ? error.message : "enlace no disponible."}`);
+    } finally {
+      setBusy("");
+    }
+  }
+  async function submitBankLink(event: React.FormEvent) {
+    event.preventDefault();
+    const id = parseBankId(bankLink);
+    if (!id) { setNotice("Pega un enlace compartido válido o el identificador del banco."); return; }
+    await importBankById(id);
   }
   function planForms(): FormPlan[] {
     return Array.from({ length: Math.max(1, Math.min(10, Number(exam.variants) || 1)) }, (_, form) => {
@@ -558,7 +652,7 @@ export default function Home() {
       pdf.setFont("helvetica", "normal");
       pdf.setFontSize(7 * style.scale);
       pdf.setTextColor(90);
-      pdf.text(`${answerKey ? "PAUTA" : "AULAFORMA"}  •  Forma ${String.fromCharCode(65 + form)}`, left, footerY);
+      pdf.text(`${answerKey ? "PAUTA" : "APOLLO"}  •  Forma ${String.fromCharCode(65 + form)}`, left, footerY);
     }
     return pdf.output("blob");
   }
@@ -671,8 +765,8 @@ export default function Home() {
   }
 
   return <main className="shell">
-    <aside className="rail"><div className="brand-mark">a<span>.</span></div><button className={tab === "editor" ? "rail-btn active" : "rail-btn"} title="Editor" aria-label="Editor" onClick={() => setTab("editor")}>✎</button><button className={tab === "header" ? "rail-btn active" : "rail-btn"} title="Encabezado de la prueba" aria-label="Encabezado de la prueba" onClick={() => setTab("header")}>▧</button><button className={tab === "history" ? "rail-btn active" : "rail-btn"} title="Mis pruebas" aria-label="Mis pruebas" onClick={() => setTab("history")}>▤</button><button className={tab === "bank" ? "rail-btn active" : "rail-btn"} title="Banco de preguntas" aria-label="Banco de preguntas" onClick={() => setTab("bank")}>▦</button><div className="rail-bottom"><div className="avatar" title={user?.email}>{user?.user_metadata?.full_name?.[0] || user?.email?.[0]?.toUpperCase() || "P"}</div></div></aside>
-    <section className="workspace"><header className="topbar"><div className="crumb"><span>Espacio de trabajo</span><b>/</b><strong>{tab === "history" ? "Mis pruebas" : tab === "bank" ? "Banco de preguntas" : tab === "header" ? "Encabezado de la prueba" : "Editor de pruebas"}</strong></div><div className="top-actions"><span className="save-state" role="status" aria-live="polite">{isDirty ? "Cambios sin guardar" : docId ? lastSaved || "Guardado" : "Sin guardar"}</span>{!user && <button className="btn ghost" onClick={() => setModal("auth")}>Crear cuenta</button>}<><button className="btn ghost forms-button" onClick={() => setModal("variants")}>Formas: {exam.variants}</button>{tab === "editor" && <button className="btn ghost minimap-toggle" aria-pressed={minimapVisible} onClick={() => setMinimapVisible(visible => !visible)}>{minimapVisible ? "Ocultar mapa" : "Mostrar mapa"}</button>}</><button className="btn ghost" onClick={save}>{busy === "save" ? "Guardando…" : "Guardar"}</button><button className="btn primary" onClick={printPdf}>{busy === "pdf" ? "Preparando vista previa…" : <><span>↓</span> Exportar PDF</>}</button><button className="btn ghost" onClick={printAnswerKey} disabled={busy === "key" || !generation || generation.signature !== JSON.stringify(exam)} title={!generation || generation.signature !== JSON.stringify(exam) ? "Exporta las formas actuales antes de descargar la pauta" : "Descargar pauta"}>{busy === "key" ? "Generando pauta…" : "Descargar pauta"}</button></div></header>
+    <aside className="rail"><div className="brand-mark">A<span>.</span></div><button className={tab === "editor" ? "rail-btn active" : "rail-btn"} title="Editor" aria-label="Editor" onClick={() => setTab("editor")}>✎</button><button className={tab === "header" ? "rail-btn active" : "rail-btn"} title="Encabezado de la prueba" aria-label="Encabezado de la prueba" onClick={() => setTab("header")}>▧</button><button className={tab === "history" ? "rail-btn active" : "rail-btn"} title="Mis pruebas" aria-label="Mis pruebas" onClick={() => setTab("history")}>▤</button><button className={tab === "bank" ? "rail-btn active" : "rail-btn"} title="Banco de preguntas" aria-label="Banco de preguntas" onClick={() => setTab("bank")}>▦</button><div className="rail-bottom"><div className="avatar" title={user?.email}>{user?.user_metadata?.full_name?.[0] || user?.email?.[0]?.toUpperCase() || "P"}</div></div></aside>
+    <section className="workspace"><header className="topbar"><div className="crumb"><span>Apollo</span><b>/</b><strong>{tab === "history" ? "Mis pruebas" : tab === "bank" ? "Banco de preguntas" : tab === "header" ? "Encabezado de la prueba" : "Editor de pruebas"}</strong></div><div className="top-actions"><span className="save-state" role="status" aria-live="polite">{isDirty ? "Cambios sin guardar" : docId ? lastSaved || "Guardado" : "Sin guardar"}</span>{!user && <button className="btn ghost" onClick={() => setModal("auth")}>Crear cuenta</button>}<><button className="btn ghost forms-button" onClick={() => setModal("variants")}>Formas: {exam.variants}</button>{tab === "editor" && <button className="btn ghost minimap-toggle" aria-pressed={minimapVisible} onClick={() => setMinimapVisible(visible => !visible)}>{minimapVisible ? "Ocultar mapa" : "Mostrar mapa"}</button>}</><button className="btn ghost" onClick={save}>{busy === "save" ? "Guardando…" : "Guardar"}</button><button className="btn primary" onClick={printPdf}>{busy === "pdf" ? "Preparando vista previa…" : <><span>↓</span> Exportar PDF</>}</button><button className="btn ghost" onClick={printAnswerKey} disabled={busy === "key" || !generation || generation.signature !== JSON.stringify(exam)} title={!generation || generation.signature !== JSON.stringify(exam) ? "Exporta las formas actuales antes de descargar la pauta" : "Descargar pauta"}>{busy === "key" ? "Generando pauta…" : "Descargar pauta"}</button></div></header>
       {notice && <div className="notice" role="status" aria-live="polite">{notice}<button aria-label="Cerrar aviso" onClick={() => setNotice("")}>×</button></div>}
       {tab === "editor" && <div className="content editor-layout"><section className="edit-column"><div className="eyebrow"><span>✦</span> CREADOR DE PRUEBAS</div><input className="exam-title" value={exam.title} onChange={e => updateExam({ title: e.target.value })} aria-label="Título de la prueba"/><div className="metadata-grid"><label>ASIGNATURA<input value={exam.subject} onChange={e => updateExam({ subject: e.target.value })}/></label><label>NIVEL / CURSO<input value={exam.grade} onChange={e => updateExam({ grade: e.target.value })}/></label><label>DOCENTE<input value={exam.teacher} placeholder="Tu nombre" onChange={e => updateExam({ teacher: e.target.value })}/></label><label>DURACIÓN<input value={exam.duration} onChange={e => updateExam({ duration: e.target.value })}/></label></div>
           <div className="section-tabs">{exam.sections.map((s, i) => <button key={s.id} className={active === i ? "section-tab selected" : "section-tab"} onClick={() => setActive(i)}>{String(i + 1).padStart(2, "0")} <span>{s.title || "Sección"}</span></button>)}<button className="add-section" onClick={addSection}>＋ Sección</button></div>
@@ -687,14 +781,15 @@ export default function Home() {
               <div className="card-footer"><span>✓ {q.kind === "written" ? "Respuesta libre" : q.kind === "fill" ? <>Pauta: <b>{q.expected || "sin respuesta esperada"}</b></> : q.kind === "matching" ? `${(q.pairs || []).length} parejas` : q.kind === "multiple" ? <>Correctas: <b>{(q.answers || []).map(i => q.options[i]).filter(Boolean).join(", ") || "sin marcar"}</b></> : <>Respuesta correcta: <b>{q.options[q.answer] || "sin marcar"}</b></>}</span><span>{exam.variants > 1 ? "↔ Puede cambiar por forma" : "↔ Orden mezclado al exportar"}</span></div>
             </article>)}
             <div className="add-question-tools"><button className="btn ghost add-question-trigger" aria-expanded={questionPickerOpen} onClick={() => setQuestionPickerOpen(open => !open)}>{questionPickerOpen ? "× Cerrar tipos" : "＋ Agregar pregunta"}</button>{questionPickerOpen && <div className="question-type-picker" aria-label="Tipos de pregunta">{questionGroups.map(group => <section className="question-type-group" key={group}><h4>{group}</h4><div>{questionTypes.filter(type => type.group === group).map(type => <button key={type.kind} onClick={() => { addQuestion(active, type.kind); setQuestionPickerOpen(false); }}><b>{type.label}</b><span>{type.description}</span></button>)}</div></section>)}</div>}</div>
+            <button className="btn ghost bank-source-trigger" onClick={() => setTab("bank")}>Añadir desde un banco</button>
           </div> : <div className="empty-card">Crea una sección para comenzar.</div>}
           <div className="lower-actions"><button className="btn ghost" onClick={() => setTab("header")}>▧ Diseñar encabezado</button><button className="btn ghost" onClick={shareBank}>↗ Compartir banco</button><button className="btn ghost" onClick={exportQuestions}>↓ Exportar preguntas JSON</button><label className="btn ghost import-label">↑ Importar preguntas<input type="file" accept="application/json,.json" onChange={importFile}/></label></div>
         </section><aside className="minimap-column" hidden={!minimapVisible}><div className="minimap-head"><div className="eyebrow">ESTRUCTURA</div><h3>Mapa de contenido</h3><p>Navega por secciones y revisa cuántas preguntas entran en cada forma.</p></div><div className="minimap-stats"><span><b>{exam.sections.length}</b> secciones</span><span><b>{total}</b> preguntas incluidas</span></div><nav className="minimap-sections" aria-label="Secciones de la prueba">{exam.sections.map((section, index) => { const included = Math.max(0, Math.min(Number(section.pick) || 0, section.questions.length)); return <button type="button" key={section.id} className={active === index ? "minimap-section active" : "minimap-section"} onClick={() => { setActive(index); document.getElementById("section-editor")?.scrollIntoView({ behavior: "smooth", block: "start" }); }}><span className="minimap-number">{String(index + 1).padStart(2, "0")}</span><span className="minimap-copy"><b>{section.title || `Sección ${index + 1}`}</b><small>{included} de {section.questions.length} preguntas</small><span className="minimap-meter"><i style={{ width: `${section.questions.length ? included / section.questions.length * 100 : 0}%` }} /></span></span></button>; })}</nav><div className="minimap-footer"><span>Banco: {questions.length} preguntas</span><span>Configuración: {exam.variants} forma{exam.variants === 1 ? "" : "s"}</span></div></aside></div>}
       {tab === "header" && <div className="content editor-layout"><section className="edit-column"><div className="eyebrow"><span>✦</span> DISEÑO DE LA PRUEBA</div><h1 className="page-title">Personaliza el encabezado</h1><p className="page-description">Adapta la primera parte de la hoja al formato de tu colegio. Los cambios se aplican a todas las formas.</p><div className="header-config-card"><div className="eyebrow">IDENTIDAD DEL ESTABLECIMIENTO</div><div className="logo-row">{exam.header.logo ? <img className="logo-thumb" src={exam.header.logo} alt="Vista previa del logo"/> : <div className="logo-placeholder">▧</div>}<div className="logo-upload"><b>Logo o insignia</b><span>Se ajusta automáticamente · JPG o PNG, máximo 5 MB</span><label className="btn ghost">{exam.header.logo ? "Cambiar logo" : "＋ Subir logo"}<input type="file" accept="image/png,image/jpeg,image/webp" onChange={e => uploadLogo(e.target.files?.[0])}/></label></div>{exam.header.logo && <button className="remove-logo" onClick={() => updateHeader({ logo: "" })}>Quitar</button>}</div><label className="header-label">NOMBRE DEL ESTABLECIMIENTO<input value={exam.header.school} onChange={e => updateHeader({ school: e.target.value })} placeholder="Ej. Escuela Básica Los Aromos"/></label><div className="header-divider"/><div className="eyebrow">TÍTULOS IMPRESOS</div><label className="header-label">TÍTULO PRINCIPAL<input value={exam.header.title} onChange={e => updateHeader({ title: e.target.value })} placeholder={exam.title || "Usar el título de la prueba"}/><small>Si lo dejas vacío, se imprime el título de la prueba.</small></label><label className="header-label">SUBTÍTULO O TEXTO INSTITUCIONAL<input value={exam.header.subtitle} onChange={e => updateHeader({ subtitle: e.target.value })} placeholder="Ej. Departamento de Ciencias · Año 2026"/></label><div className="header-divider"/><div className="header-fields-head"><div><div className="eyebrow">ESPACIOS PARA COMPLETAR</div><span>Activa, renombra y ordena los campos de identificación y calificación.</span></div></div><div className="header-fields">{exam.header.fields.map(field => <div className={field.enabled ? "header-field" : "header-field disabled"} key={field.id}><input aria-label={`Mostrar ${field.label}`} type="checkbox" checked={field.enabled} onChange={e => updateHeaderField(field.id, { enabled: e.target.checked })}/><input className="field-name" aria-label={`Nombre del campo ${field.label}`} value={field.label} onChange={e => updateHeaderField(field.id, { label: e.target.value })}/><label className="wide-toggle"><input type="checkbox" checked={field.wide} onChange={e => updateHeaderField(field.id, { wide: e.target.checked })}/> Línea completa</label><button className="option-delete" title="Eliminar campo" aria-label="Eliminar campo" onClick={() => updateHeader({ fields: exam.header.fields.filter(item => item.id !== field.id) })}>×</button></div>)}</div><button className="add-option add-header-field" onClick={() => updateHeader({ fields: [...exam.header.fields, { id: uid(), label: "Nuevo campo", enabled: true, wide: false }] })}>＋ Añadir espacio</button><div className="header-help">Los espacios aparecen en la hoja como líneas para escribir a mano. Por ejemplo: nombre, RUT, puntaje, nota o firma.</div></div><div className="lower-actions"><button className="btn ghost" onClick={() => setTab("editor")}>← Volver al contenido</button></div></section><div className="header-export-note"><div><b>Previsualización del documento</b><span>Usa la vista previa de exportación para ver el PDF real y ajustar su densidad.</span></div><button className="btn primary" onClick={printPdf}>Vista previa y estilos PDF</button></div></div>}
       {tab === "history" && <div className="content page-content"><div className="page-heading"><div><div className="eyebrow">TU BIBLIOTECA</div><h1>Mis pruebas</h1><p>Tus documentos se guardan como datos y se regeneran al exportar.</p></div><button className="btn primary" onClick={startNewExam}>＋ Nueva prueba</button></div>{!user ? <div className="empty-card">Inicia sesión para guardar y consultar tus pruebas.<button className="btn primary" onClick={() => setModal("auth")}>Iniciar sesión</button></div> : historyLoading ? <div className="empty-card" role="status">Cargando tu historial…</div> : historyError ? <div className="empty-card history-error" role="alert">{historyError}<button className="btn ghost" onClick={loadHistory}>Reintentar</button></div> : history.length ? <div className="history-grid">{history.map(item => <article className="history-card" key={item.id}><div className="doc-icon">▤</div><div className="history-info"><b>{item.title}</b><span>{new Date(item.updated_at).toLocaleDateString("es-CL")} · {item.data?.sections?.flatMap((s: Section) => s.questions).length || 0} preguntas</span></div><button onClick={() => restore(item)}>Abrir →</button></article>)}</div> : <div className="empty-card">Todavía no tienes pruebas guardadas. Crea una y pulsa Guardar.</div>}</div>}
-      {tab === "bank" && <div className="content page-content"><div className="page-heading"><div><div className="eyebrow">COMUNIDAD DOCENTE</div><h1>Banco de preguntas</h1><p>Comparte preguntas mediante un enlace que otros profesores pueden importar.</p></div><button className="btn primary" onClick={() => { setTab("editor"); shareBank(); }}>↗ Compartir selección</button></div><div className="bank-feature"><div className="bank-art">✳</div><div><div className="eyebrow">BANCO ACTUAL</div><h2>{exam.title}</h2><p>{questions.length} preguntas · {exam.subject}</p><button className="btn primary" onClick={shareBank}>Crear enlace para compartir</button></div></div><div className="empty-card">Los bancos que compartes se abren con un enlace y se pueden importar a una prueba. Elige qué preguntas incluir desde el editor.</div></div>}
+      {tab === "bank" && <div className="content page-content"><div className="page-heading"><div><div className="eyebrow">COMUNIDAD DOCENTE</div><h1>Banco de preguntas</h1><p>Publica la prueba actual o añade preguntas de un banco directamente a esta prueba.</p></div><button className="btn primary" onClick={() => { setTab("editor"); shareBank(); }}>↗ Compartir selección</button></div><div className="bank-feature"><div className="bank-art">✳</div><div><div className="eyebrow">PRUEBA ACTUAL</div><h2>{exam.title}</h2><p>{questions.length} preguntas · {exam.subject || "Sin asignatura"}</p><button className="btn primary" onClick={shareBank}>Publicar como banco</button></div></div><section className="bank-library" aria-labelledby="bank-library-title"><div className="bank-library-heading"><div><div className="eyebrow">USAR DURANTE LA CREACIÓN</div><h2 id="bank-library-title">Añadir preguntas a la prueba</h2><p>Elige un banco publicado o pega un enlace. Sus preguntas se incorporan a la sección activa «{exam.sections[active]?.title || "Sección"}»; el resto de la prueba se conserva.</p></div><button className="btn ghost" onClick={() => setTab("editor")}>Volver al editor</button></div><form className="bank-link-form" onSubmit={submitBankLink}><label htmlFor="shared-bank-link">Enlace compartido o UUID del banco<input id="shared-bank-link" type="text" required value={bankLink} onChange={event => setBankLink(event.target.value)} placeholder="https://tu-dominio.cl/?banco=…"/></label><button className="btn primary" disabled={busy !== ""}>{busy === "bank" ? "Añadiendo…" : "Añadir por enlace"}</button></form>{!user ? <div className="empty-card bank-library-state">Inicia sesión para ver tus bancos publicados. Puedes añadir un enlace compartido arriba.<button className="btn ghost" onClick={() => setModal("auth")}>Iniciar sesión</button></div> : banksLoading ? <div className="empty-card bank-library-state" role="status">Cargando tus bancos publicados…</div> : banksError ? <div className="empty-card bank-library-state" role="alert">{banksError}<button className="btn ghost" onClick={() => void loadBanks()}>Reintentar</button></div> : banks.length ? <ul className="bank-list">{banks.map(bank => <li className="bank-list-item" key={bank.id}><div className="bank-list-info"><b>{bank.title}</b><span>Publicado el {new Date(bank.created_at).toLocaleDateString("es-CL")}</span></div><button className="btn ghost" disabled={busy !== ""} onClick={() => void importBankById(bank.id)}>{busy === "bank" ? "Añadiendo…" : "Añadir a esta prueba"}</button></li>)}</ul> : <div className="empty-card bank-library-state">Todavía no tienes bancos publicados. Comparte una prueba para poder reutilizarla aquí.</div>}</section></div>}
     </section>
-    {modal && <div className="modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setModal(null); }}><div className={modal === "export" ? "modal export-modal" : "modal"} role="dialog" aria-modal="true" aria-label={modal === "auth" ? authMode === "register" ? "Crear cuenta" : "Iniciar sesión" : modal === "export" ? "Vista previa del PDF" : modal === "variants" ? "Configuración de formas" : "Enlace de banco compartido"} tabIndex={-1} ref={dialogRef}><button className="modal-close" aria-label="Cerrar diálogo" onClick={() => setModal(null)}>×</button>{modal === "auth" ? <><div className="brand-large">a<span>.</span></div><div className="eyebrow">BIENVENIDO A AULAFORMA</div><h2>{authMode === "register" ? "Tu próxima prueba empieza aquí." : "Qué bueno verte de nuevo."}</h2><p>Guarda tus pruebas y accede a ellas desde cualquier lugar.</p><form onSubmit={authSubmit}>{notice && <p className="form-error">{notice}</p>}{authMode === "register" && <label>Nombre<input required minLength={2} value={name} onChange={e => setName(e.target.value)} placeholder="Tu nombre"/></label>}<label>Correo electrónico<input required type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="profe@colegio.cl"/></label><label>Contraseña<input required minLength={10} type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="10 caracteres o más"/></label><button className="btn primary full" disabled={authBusy}>{authBusy ? "Un momento…" : authMode === "register" ? "Crear cuenta" : "Iniciar sesión"}</button></form><button className="switch-auth" onClick={() => setAuthMode(authMode === "register" ? "login" : "register")}>{authMode === "register" ? "¿Ya tienes cuenta? Inicia sesión" : "¿Primera vez? Crea una cuenta"}</button></> : modal === "export" ? <><div className="export-title"><div className="eyebrow">EXPORTACIÓN</div><h2>Revisa el PDF</h2><p>Elige un estilo y comprueba el documento real antes de descargarlo.</p></div><><div className="pdf-style-options" role="radiogroup" aria-label="Estilo del documento">{[{ id: "compact", label: "Compacto", description: "Más contenido por página y encabezado reducido." }, { id: "balanced", label: "Equilibrado", description: "Espaciado intermedio para lectura cómoda." }, { id: "spacious", label: "Amplio", description: "Texto y espacios de respuesta más generosos." }].map(option => <button type="button" role="radio" aria-checked={pdfStyle === option.id} className={pdfStyle === option.id ? "pdf-style-option selected" : "pdf-style-option"} key={option.id} disabled={busy === "preview"} onClick={() => changePdfStyle(option.id as PdfStyle)}><b>{option.label}</b><span>{option.description}</span></button>)}</div><a className="btn ghost pdf-open-link" href={pdfPreviewUrl} target="_blank" rel="noreferrer">Abrir PDF en una pestaña nueva</a></><div className="pdf-preview-frame">{busy === "preview" ? <div className="pdf-preview-loading">Actualizando vista previa…</div> : pdfPreviewUrl ? <iframe title="Vista previa del PDF para imprimir" src={pdfPreviewUrl} /> : <div className="pdf-preview-loading">Preparando documento…</div>}</div><div className="export-modal-actions"><button className="btn ghost" onClick={() => setModal(null)}>Cerrar</button><button className="btn ghost" onClick={printAnswerKey} disabled={busy === "key" || !generation || generation.signature !== JSON.stringify(exam)}>{busy === "key" ? "Generando pauta…" : "Descargar pauta"}</button><button className="btn primary" onClick={downloadPreview} disabled={!pdfPreviewUrl || busy === "preview"}>Descargar PDF de estudiantes</button></div></> : modal === "variants" ? <><div className="eyebrow">CONFIGURACIÓN DE IMPRESIÓN</div><h2>Formas de la prueba</h2><p>Genera hasta 10 versiones. El orden de las preguntas y alternativas se mezcla por forma.</p><label className="variant-number">Cantidad de formas<input type="number" min="1" max="10" value={exam.variants} onChange={e => updateExam({ variants: Math.max(1, Math.min(10, Number(e.target.value))) })}/></label>{exam.variants > 1 && <div className="variant-note">Cada forma usa una selección y orden diferentes cuando hay preguntas disponibles.</div>}<button className="btn primary full" onClick={() => setModal(null)}>Listo</button></> : <><div className="eyebrow">BANCO COMPARTIDO</div><h2>Enlace listo para compartir</h2><p>Cualquier profesor con el enlace podrá importar una copia de estas preguntas.</p><div className="share-input">{shareUrl}<button onClick={() => { navigator.clipboard.writeText(shareUrl); setNotice("Enlace copiado."); }}>Copiar</button></div><button className="btn primary full" onClick={() => setModal(null)}>Listo</button></>}</div></div>}
+    {modal && <div className="modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setModal(null); }}><div className={modal === "export" ? "modal export-modal" : "modal"} role="dialog" aria-modal="true" aria-label={modal === "auth" ? authMode === "register" ? "Crear cuenta" : "Iniciar sesión" : modal === "export" ? "Vista previa del PDF" : modal === "variants" ? "Configuración de formas" : "Enlace de banco compartido"} tabIndex={-1} ref={dialogRef}><button className="modal-close" aria-label="Cerrar diálogo" onClick={() => setModal(null)}>×</button>{modal === "auth" ? <><div className="brand-large">A<span>.</span></div><div className="eyebrow">BIENVENIDO A APOLLO</div><h2>{authMode === "register" ? "Tu próxima prueba empieza aquí." : "Qué bueno verte de nuevo."}</h2><p>Guarda tus pruebas y accede a ellas desde cualquier lugar.</p><form onSubmit={authSubmit}>{notice && <p className="form-error">{notice}</p>}{authMode === "register" && <label>Nombre<input required minLength={2} value={name} onChange={e => setName(e.target.value)} placeholder="Tu nombre"/></label>}<label>Correo electrónico<input required type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="profe@colegio.cl"/></label><label>Contraseña<input required minLength={10} type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="10 caracteres o más"/></label><button className="btn primary full" disabled={authBusy}>{authBusy ? "Un momento…" : authMode === "register" ? "Crear cuenta" : "Iniciar sesión"}</button></form><button className="switch-auth" onClick={() => setAuthMode(authMode === "register" ? "login" : "register")}>{authMode === "register" ? "¿Ya tienes cuenta? Inicia sesión" : "¿Primera vez? Crea una cuenta"}</button></> : modal === "export" ? <><div className="export-title"><div className="eyebrow">EXPORTACIÓN</div><h2>Revisa el PDF</h2><p>Elige un estilo y comprueba el documento real antes de descargarlo.</p></div><><div className="pdf-style-options" role="radiogroup" aria-label="Estilo del documento">{[{ id: "compact", label: "Compacto", description: "Más contenido por página y encabezado reducido." }, { id: "balanced", label: "Equilibrado", description: "Espaciado intermedio para lectura cómoda." }, { id: "spacious", label: "Amplio", description: "Texto y espacios de respuesta más generosos." }].map(option => <button type="button" role="radio" aria-checked={pdfStyle === option.id} className={pdfStyle === option.id ? "pdf-style-option selected" : "pdf-style-option"} key={option.id} disabled={busy === "preview"} onClick={() => changePdfStyle(option.id as PdfStyle)}><b>{option.label}</b><span>{option.description}</span></button>)}</div><a className="btn ghost pdf-open-link" href={pdfPreviewUrl} target="_blank" rel="noreferrer">Abrir PDF en una pestaña nueva</a></><div className="pdf-preview-frame">{busy === "preview" ? <div className="pdf-preview-loading">Actualizando vista previa…</div> : pdfPreviewUrl ? <iframe title="Vista previa del PDF para imprimir" src={pdfPreviewUrl} /> : <div className="pdf-preview-loading">Preparando documento…</div>}</div><div className="export-modal-actions"><button className="btn ghost" onClick={() => setModal(null)}>Cerrar</button><button className="btn ghost" onClick={printAnswerKey} disabled={busy === "key" || !generation || generation.signature !== JSON.stringify(exam)}>{busy === "key" ? "Generando pauta…" : "Descargar pauta"}</button><button className="btn primary" onClick={downloadPreview} disabled={!pdfPreviewUrl || busy === "preview"}>Descargar PDF de estudiantes</button></div></> : modal === "variants" ? <><div className="eyebrow">CONFIGURACIÓN DE IMPRESIÓN</div><h2>Formas de la prueba</h2><p>Genera hasta 10 versiones. El orden de las preguntas y alternativas se mezcla por forma.</p><label className="variant-number">Cantidad de formas<input type="number" min="1" max="10" value={exam.variants} onChange={e => updateExam({ variants: Math.max(1, Math.min(10, Number(e.target.value))) })}/></label>{exam.variants > 1 && <div className="variant-note">Cada forma usa una selección y orden diferentes cuando hay preguntas disponibles.</div>}<button className="btn primary full" onClick={() => setModal(null)}>Listo</button></> : <><div className="eyebrow">BANCO COMPARTIDO</div><h2>Enlace listo para compartir</h2><p>Cualquier profesor con el enlace podrá importar una copia de estas preguntas.</p><div className="share-input">{shareUrl}<button onClick={() => { navigator.clipboard.writeText(shareUrl); setNotice("Enlace copiado."); }}>Copiar</button></div><button className="btn primary full" onClick={() => setModal(null)}>Listo</button></>}</div></div>}
     {user && <button className="signout" onClick={async () => { await supabase().auth.signOut(); setUser(null); setHistory([]); }}>↪ Cerrar sesión</button>}
   </main>;
 }

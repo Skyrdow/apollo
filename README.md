@@ -1,4 +1,4 @@
-# Aulaforma
+# Apollo
 
 Editor de pruebas imprimibles con Next.js, Supabase Auth, Postgres y generación de PDF en el navegador.
 
