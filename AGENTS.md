@@ -76,7 +76,7 @@ Implementar primero los tipos que cubren evaluaciones escolares frecuentes:
 
 1. **Selección única:** alternativas y una respuesta correcta.
 2. **Selección múltiple:** alternativas y varias respuestas correctas; indicar en el enunciado que puede haber más de una respuesta.
-3. **Verdadero o falso:** dos alternativas, una correcta.
+3. **Verdadero o falso:** varias afirmaciones independientes, cada una con respuesta V/F en la pauta y un espacio para que el estudiante escriba V o F.
 4. **Respuesta breve o desarrollo:** enunciado y espacio de líneas imprimibles configurable o con un valor inicial razonable.
 5. **Completar:** enunciado con uno o más espacios y respuesta esperada para la pauta.
 6. **Términos pareados:** pares editables; imprimir dos columnas y mezclar las opciones de la segunda columna por forma.
