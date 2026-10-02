@@ -47,6 +47,7 @@ type PdfStyle = "compact" | "balanced" | "spacious";
 type PdfFont = "helvetica" | "times" | "courier";
 type PlannedQuestion = { question: Question; optionOrder: number[]; matchOrder: number[] };
 type FormPlan = { sections: { title: string; instructions: string; questions: PlannedQuestion[] }[]; points: number };
+type PdfTextCell = { canvas: HTMLCanvasElement; height: number } | { lines: string[]; height: number };
 type Generation = { signature: string; forms: FormPlan[] };
 type User = { id: string; email: string; full_name: string };
 type SavedDocument = { id: string; title: string; updated_at: string; data: Exam };
@@ -948,15 +949,15 @@ export default function Home() {
         }
         y += style.paragraphGap;
       };
-      const measureTextHeight = async (text: string, size: number, bold = false) => {
+      const measureTextHeight = async (text: string, size: number, bold = false, textWidth = width) => {
         const actualSize = size * style.scale;
         if (containsLatexMath(text)) {
-          const canvas = await renderMathCanvas(text, width, actualSize, bold, mathFontFamily);
+          const canvas = await renderMathCanvas(text, textWidth, actualSize, bold, mathFontFamily);
           return canvas.height / pixelsPerMm + Math.max(style.paragraphGap, actualSize * 0.2);
         }
         pdf.setFont(fontName, bold ? "bold" : "normal");
         pdf.setFontSize(actualSize);
-        const lines = pdf.splitTextToSize(text.replace(/→/g, "->"), width) as string[];
+        const lines = pdf.splitTextToSize(text.replace(/→/g, "->"), textWidth) as string[];
         return lines.length * Math.max(3.2, actualSize * style.leading) + style.paragraphGap;
       };
       const answerKeyText = (item: PlannedQuestion, questionNumber: number) => {
@@ -980,9 +981,16 @@ export default function Home() {
         } else if (q.kind === "fill") {
           height += style.fieldRow + 2;
         } else if (q.kind === "matching") {
+          const pairs = q.pairs || [];
+          const columnGap = 6;
+          const columnWidth = (width - columnGap) / 2;
           height += await measureTextHeight("Relaciona cada elemento de la columna A con la alternativa correcta de la columna B.", 8);
-          for (const [index, pair] of (q.pairs || []).entries()) height += await measureTextHeight(`${index + 1}. ${pair.left}   ______`, 9);
-          for (const [index, pairIndex] of item.matchOrder.entries()) height += await measureTextHeight(`${String.fromCharCode(65 + index)}) ${q.pairs?.[pairIndex]?.right || ""}`, 9);
+          for (const [index, pair] of pairs.entries()) {
+            const leftHeight = await measureTextHeight(`${index + 1}. ${pair.left}  ______`, 9, false, columnWidth);
+            const pairIndex = item.matchOrder[index];
+            const rightHeight = pairIndex === undefined ? 0 : await measureTextHeight(`${String.fromCharCode(65 + index)}) ${pairs[pairIndex]?.right || ""}`, 9, false, columnWidth);
+            height += Math.max(leftHeight, rightHeight);
+          }
         } else if (q.kind === "truefalse") {
           for (const [index, statement] of (q.statements || []).entries()) height += await measureTextHeight(`${index + 1}. _____ ${statement.text}`, 9);
         } else {
@@ -1151,9 +1159,42 @@ export default function Home() {
               y += style.fieldRow;
             } else if (q.kind === "matching") {
               const pairs = q.pairs || [];
+              const columnGap = 6;
+              const columnWidth = (width - columnGap) / 2;
               await write("Relaciona cada elemento de la columna A con la alternativa correcta de la columna B.", 8);
-              for (const [index, pair] of pairs.entries()) await write(`${index + 1}. ${pair.left}   ______`, 9);
-              for (const [index, pairIndex] of item.matchOrder.entries()) await write(`${String.fromCharCode(65 + index)}) ${pairs[pairIndex]?.right || ""}`, 9);
+              const prepareCell = async (text: string) => {
+                const actualSize = 9 * style.scale;
+                if (containsLatexMath(text)) {
+                  const canvas = await renderMathCanvas(text, columnWidth, actualSize, false, mathFontFamily);
+                  return { canvas, height: canvas.height / pixelsPerMm + Math.max(style.paragraphGap, actualSize * 0.2) };
+                }
+                pdf.setFont(fontName, "normal");
+                pdf.setFontSize(actualSize);
+                const lines = pdf.splitTextToSize(text.replace(/→/g, "->"), columnWidth) as string[];
+                return { lines, height: lines.length * Math.max(3.2, actualSize * style.leading) + style.paragraphGap };
+              };
+              const leftCells = await Promise.all(pairs.map((pair, index) => prepareCell(`${index + 1}. ${pair.left}  ______`)));
+              const rightCells = await Promise.all(item.matchOrder.map((pairIndex, index) => prepareCell(`${String.fromCharCode(65 + index)}) ${pairs[pairIndex]?.right || ""}`)));
+              const drawCell = (cell: PdfTextCell | undefined, x: number) => {
+                if (!cell) return;
+                if ("canvas" in cell) {
+                  pdf.addImage(cell.canvas, "PNG", x, y, columnWidth, cell.canvas.height / pixelsPerMm, undefined, "FAST");
+                } else {
+                  pdf.setFont(fontName, "normal");
+                  pdf.setFontSize(9 * style.scale);
+                  const lineHeight = Math.max(3.2, 9 * style.scale * style.leading);
+                  cell.lines.forEach((line, index) => pdf.text(line, x, y + index * lineHeight));
+                }
+              };
+              for (let index = 0; index < Math.max(leftCells.length, rightCells.length); index++) {
+                const leftCell = leftCells[index];
+                const rightCell = rightCells[index];
+                const rowHeight = Math.max(leftCell?.height || 0, rightCell?.height || 0);
+                ensureSpace(rowHeight);
+                drawCell(leftCell, left);
+                drawCell(rightCell, left + columnWidth + columnGap);
+                y += rowHeight;
+              }
             } else if (q.kind === "truefalse") {
               for (const [index, statement] of (q.statements || []).entries()) {
                 await write(`${index + 1}. _____ ${statement.text}`, 9);
