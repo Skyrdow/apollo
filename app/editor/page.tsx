@@ -5,7 +5,6 @@ import { renderToString } from "katex";
 import html2canvas from "html2canvas";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { jsPDF } from "jspdf";
-import { supabase } from "@/lib/supabase";
 
 type QuestionKind = "choice" | "multiple" | "truefalse" | "written" | "fill" | "matching";
 type TrueFalseStatement = { id: string; text: string; answer: "V" | "F" };
@@ -49,7 +48,7 @@ type PdfFont = "helvetica" | "times" | "courier";
 type PlannedQuestion = { question: Question; optionOrder: number[]; matchOrder: number[] };
 type FormPlan = { sections: { title: string; instructions: string; questions: PlannedQuestion[] }[]; points: number };
 type Generation = { signature: string; forms: FormPlan[] };
-type User = { id: string; email: string; user_metadata?: { full_name?: string } };
+type User = { id: string; email: string; full_name: string };
 type SavedDocument = { id: string; title: string; updated_at: string; data: Exam };
 type SavedBank = { id: string; title: string; created_at: string };
 const mathDelimiterSplit = /(\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|\$[^$\n]+?\$)/g;
@@ -511,13 +510,12 @@ export default function Home() {
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [modal]);
 
-  const token = useCallback(async () => (await supabase().auth.getSession()).data.session?.access_token ?? "", []);
   const loadHistory = useCallback(async () => {
     if (!user) return;
     setHistoryLoading(true);
     setHistoryError("");
     try {
-      const response = await fetch("/api/documents", { headers: { Authorization: `Bearer ${await token()}` } });
+      const response = await fetch("/api/documents");
       const result: unknown = await response.json().catch(() => null);
       if (!response.ok) {
         const message = isRecord(result) && typeof result.error === "string" ? result.error : "No se pudo cargar tu historial.";
@@ -531,13 +529,13 @@ export default function Home() {
     } finally {
       setHistoryLoading(false);
     }
-  }, [user, token]);
+  }, [user]);
   const loadBanks = useCallback(async () => {
     if (!user) { setBanks([]); setBanksError(""); return; }
     setBanksLoading(true);
     setBanksError("");
     try {
-      const response = await fetch("/api/banks", { headers: { Authorization: `Bearer ${await token()}` } });
+      const response = await fetch("/api/banks");
       const result: unknown = await response.json().catch(() => null);
       if (!response.ok) throw new Error("No se pudieron cargar tus bancos.");
       const savedBanks = isRecord(result) ? parseBanks(result.banks) : null;
@@ -548,8 +546,21 @@ export default function Home() {
     } finally {
       setBanksLoading(false);
     }
-  }, [user, token]);
-  useEffect(() => { const client = supabase(); client.auth.getUser().then(({ data }) => setUser(data.user as User | null)); const { data: listener } = client.auth.onAuthStateChange((_event, session) => setUser(session?.user as User | null)); return () => listener.subscription.unsubscribe(); }, []);
+  }, [user]);
+  useEffect(() => {
+    let active = true;
+    fetch("/api/auth")
+      .then(response => response.ok ? response.json() : null)
+      .then((result: unknown) => {
+        if (!active) return;
+        const account = isRecord(result) && isRecord(result.user) &&
+          typeof result.user.id === "string" && typeof result.user.email === "string" &&
+          typeof result.user.full_name === "string" ? result.user as User : null;
+        setUser(account);
+      })
+      .catch(() => { if (active) setUser(null); });
+    return () => { active = false; };
+  }, []);
   useEffect(() => { loadHistory(); }, [loadHistory]);
   useEffect(() => { if (tab === "bank") void loadBanks(); }, [tab, loadBanks]);
   useEffect(() => {
@@ -699,13 +710,40 @@ export default function Home() {
     });
   }
 
-  async function authSubmit(event: React.FormEvent) { event.preventDefault(); setAuthBusy(true); setNotice(""); try { const client = supabase(); const result = authMode === "register" ? await client.auth.signUp({ email, password, options: { data: { full_name: name } } }) : await client.auth.signInWithPassword({ email, password }); if (result.error) { setNotice(result.error.message); return; } if (authMode === "register" && !result.data.session) { setNotice("Revisa tu correo para confirmar la cuenta y luego inicia sesión."); return; } setUser(result.data.user as User | null); setModal(null); setPassword(""); } catch { setNotice("No se pudo conectar con Supabase. Revisa la configuración del proyecto."); } finally { setAuthBusy(false); } }
+  async function authSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    setAuthBusy(true);
+    setNotice("");
+    try {
+      const response = await fetch("/api/auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: authMode, email, password, name }),
+      });
+      const result: unknown = await response.json().catch(() => null);
+      if (!response.ok) {
+        setNotice(isRecord(result) && typeof result.error === "string" ? result.error : "No se pudo iniciar sesión.");
+        return;
+      }
+      if (!isRecord(result) || !isRecord(result.user) || typeof result.user.id !== "string" ||
+          typeof result.user.email !== "string" || typeof result.user.full_name !== "string") {
+        throw new Error("Respuesta de sesión inválida.");
+      }
+      setUser(result.user as User);
+      setModal(null);
+      setPassword("");
+    } catch {
+      setNotice("No se pudo conectar con el servidor. Inténtalo de nuevo.");
+    } finally {
+      setAuthBusy(false);
+    }
+  }
   async function save() {
     if (!user) { setModal("auth"); return; }
     setBusy("save");
     setNotice("");
     try {
-      const response = await fetch("/api/documents", { method: "POST", headers: { Authorization: `Bearer ${await token()}`, "Content-Type": "application/json" }, body: JSON.stringify({ id: docId, title: exam.title, data: exam }) });
+      const response = await fetch("/api/documents", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: docId, title: exam.title, data: exam }) });
       const result: unknown = await response.json().catch(() => null);
       const id = isRecord(result) ? result.id : undefined;
       if (!response.ok || typeof id !== "string") throw new Error("No se pudo guardar la prueba.");
@@ -726,7 +764,7 @@ export default function Home() {
     setBusy("share");
     setNotice("");
     try {
-      const response = await fetch("/api/banks", { method: "POST", headers: { Authorization: `Bearer ${await token()}`, "Content-Type": "application/json" }, body: JSON.stringify({ title: exam.title, questions }) });
+      const response = await fetch("/api/banks", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: exam.title, questions }) });
       const result: unknown = await response.json().catch(() => null);
       const id = isRecord(result) ? result.id : undefined;
       if (!response.ok || typeof id !== "string") throw new Error("No se pudo crear el banco.");
@@ -1266,7 +1304,7 @@ export default function Home() {
       <button className={tab === "header" ? "rail-btn active" : "rail-btn"} title="Encabezado de la prueba" aria-label="Encabezado de la prueba" onClick={() => setTab("header")}><span className="rail-icon" aria-hidden="true">▧</span><span className="rail-label">Encabezado</span></button>
       <button className={tab === "history" ? "rail-btn active" : "rail-btn"} title="Mis pruebas" aria-label="Mis pruebas" onClick={() => setTab("history")}><span className="rail-icon" aria-hidden="true">▤</span><span className="rail-label">Mis pruebas</span></button>
       <button className={tab === "bank" ? "rail-btn active" : "rail-btn"} title="Banco de preguntas" aria-label="Banco de preguntas" onClick={() => setTab("bank")}><span className="rail-icon" aria-hidden="true">▦</span><span className="rail-label">Banco de preguntas</span></button>
-      <div className="rail-bottom"><div className="avatar" title={user?.email}>{user?.user_metadata?.full_name?.[0] || user?.email?.[0]?.toUpperCase() || "P"}</div></div>
+      <div className="rail-bottom"><div className="avatar" title={user?.email}>{user?.full_name?.[0] || user?.email?.[0]?.toUpperCase() || "P"}</div></div>
     </aside>
     <section className="workspace"><header className="topbar">
       <button type="button" className="mobile-nav-toggle" aria-expanded={mobileNavOpen} aria-controls="mobile-nav-menu" onClick={() => { setMobileNavOpen(open => !open); setMobileActionsOpen(false); }}>☰ <span>Secciones</span></button>
@@ -1494,9 +1532,9 @@ export default function Home() {
               <p>Guarda tus pruebas y accede a ellas desde cualquier lugar.</p>
               <form onSubmit={authSubmit}>
                 {notice && <p className="form-error">{notice}</p>}
-                {authMode === "register" && <label>Nombre<input required minLength={2} value={name} onChange={event => setName(event.target.value)} placeholder="Tu nombre"/></label>}
-                <label>Correo electrónico<input required type="email" value={email} onChange={event => setEmail(event.target.value)} placeholder="profe@colegio.cl"/></label>
-                <label>Contraseña<input required minLength={10} type="password" value={password} onChange={event => setPassword(event.target.value)} placeholder="10 caracteres o más"/></label>
+                {authMode === "register" && <label>Nombre<input required minLength={2} maxLength={100} value={name} onChange={event => setName(event.target.value)} placeholder="Tu nombre"/></label>}
+                <label>Correo electrónico<input required type="email" maxLength={254} value={email} onChange={event => setEmail(event.target.value)} placeholder="profe@colegio.cl"/></label>
+                <label>Contraseña<input required minLength={10} maxLength={128} type="password" value={password} onChange={event => setPassword(event.target.value)} placeholder="10 caracteres o más"/></label>
                 <button className="btn primary full" disabled={authBusy}>{authBusy ? "Un momento…" : authMode === "register" ? "Crear cuenta" : "Iniciar sesión"}</button>
               </form>
               <button className="switch-auth" onClick={() => setAuthMode(authMode === "register" ? "login" : "register")}>{authMode === "register" ? "¿Ya tienes cuenta? Inicia sesión" : "¿Primera vez? Crea una cuenta"}</button>
@@ -1569,6 +1607,6 @@ export default function Home() {
         </div>
       </div>
     )}
-    {user && <button className="signout" onClick={async () => { await supabase().auth.signOut(); setUser(null); setHistory([]); }}>↪ Cerrar sesión</button>}
+    {user && <button className="signout" onClick={async () => { await fetch("/api/auth", { method: "DELETE" }).catch(() => null); setUser(null); setHistory([]); setBanks([]); }}>↪ Cerrar sesión</button>}
   </main>;
 }

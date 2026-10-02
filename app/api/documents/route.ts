@@ -1,5 +1,7 @@
+import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
-import { serverSupabase } from "@/lib/server-supabase";
+import { getAuthUser } from "@/lib/auth";
+import { database } from "@/lib/db";
 export const runtime = "nodejs";
 
 const MAX_BODY_BYTES = 500_000;
@@ -21,21 +23,24 @@ async function readPayload(request: Request): Promise<Record<string, unknown> | 
 }
 
 export async function GET(request: Request) {
-  const auth = serverSupabase(request);
-  if (!auth) return NextResponse.json({ error: "Inicia sesión para ver tu historial." }, { status: 401 });
-  const { client: supabase, getUser } = auth;
-  const { data: { user } } = await getUser();
-  if (!user) return NextResponse.json({ error: "Sesión no válida." }, { status: 401 });
-  const { data, error } = await supabase.from("documents").select("id,title,data,updated_at").order("updated_at", { ascending: false }).limit(50);
-  return error ? NextResponse.json({ error: "No se pudo cargar tu historial." }, { status: 500 }) : NextResponse.json({ documents: data });
+  const user = await getAuthUser(request);
+  if (!user) return NextResponse.json({ error: "Inicia sesión para ver tu historial." }, { status: 401 });
+  const result = await database().execute({
+    sql: "SELECT id, title, data, updated_at FROM documents WHERE user_id = ? ORDER BY updated_at DESC LIMIT 50",
+    args: [user.id],
+  });
+  const documents = result.rows.map(row => ({
+    id: String(row.id),
+    title: String(row.title),
+    data: JSON.parse(String(row.data)),
+    updated_at: String(row.updated_at),
+  }));
+  return NextResponse.json({ documents });
 }
 
 export async function POST(request: Request) {
-  const auth = serverSupabase(request);
-  if (!auth) return NextResponse.json({ error: "Inicia sesión para guardar." }, { status: 401 });
-  const { client: supabase, getUser } = auth;
-  const { data: { user } } = await getUser();
-  if (!user) return NextResponse.json({ error: "Sesión no válida." }, { status: 401 });
+  const user = await getAuthUser(request);
+  if (!user) return NextResponse.json({ error: "Inicia sesión para guardar." }, { status: 401 });
 
   const payload = await readPayload(request);
   if (!payload) return NextResponse.json({ error: "Documento inválido (máximo 500 KB)." }, { status: 400 });
@@ -46,14 +51,22 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Documento inválido." }, { status: 400 });
   }
 
-  const row = { title, data, updated_at: new Date().toISOString() };
+  const updatedAt = new Date().toISOString();
+  const json = JSON.stringify(data);
   if (typeof id === "string") {
-    const { data: saved, error } = await supabase.from("documents").update(row).eq("id", id).eq("user_id", user.id).select("id,updated_at").maybeSingle();
-    if (error) return NextResponse.json({ error: "No se pudo guardar el documento." }, { status: 500 });
+    const result = await database().execute({
+      sql: "UPDATE documents SET title = ?, data = ?, updated_at = ? WHERE id = ? AND user_id = ? RETURNING id, updated_at",
+      args: [title, json, updatedAt, id, user.id],
+    });
+    const saved = result.rows[0];
     if (!saved) return NextResponse.json({ error: "El documento no existe." }, { status: 404 });
-    return NextResponse.json({ id: saved.id, updatedAt: saved.updated_at });
+    return NextResponse.json({ id: String(saved.id), updatedAt: String(saved.updated_at) });
   }
 
-  const { data: saved, error } = await supabase.from("documents").insert({ ...row, user_id: user.id }).select("id,updated_at").single();
-  return error ? NextResponse.json({ error: "No se pudo guardar el documento." }, { status: 500 }) : NextResponse.json({ id: saved.id, updatedAt: saved.updated_at });
+  const newId = randomUUID();
+  await database().execute({
+    sql: "INSERT INTO documents (id, user_id, title, data, updated_at) VALUES (?, ?, ?, ?, ?)",
+    args: [newId, user.id, title, json, updatedAt],
+  });
+  return NextResponse.json({ id: newId, updatedAt });
 }

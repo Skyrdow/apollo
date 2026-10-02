@@ -5,11 +5,11 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "db:setup": "node --env-file=.env.local scripts/setup-db.mjs"
   },
   "dependencies": {
-    "@supabase/ssr": "^0.6.1",
-    "@supabase/supabase-js": "^2.50.0",
+    "@libsql/client": "^0.18.0",
     "html2canvas": "^1.4.1",
     "jspdf": "^3.0.1",
     "katex": "^0.18.7",

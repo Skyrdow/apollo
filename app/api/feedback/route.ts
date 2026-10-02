@@ -1,5 +1,6 @@
-import { createClient } from "@supabase/supabase-js";
+import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
+import { database } from "@/lib/db";
 
 export const runtime = "nodejs";
 
@@ -39,15 +40,14 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Elige un tipo y escribe entre 10 y 2.000 caracteres." }, { status: 400 });
   }
 
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  if (!url || !key) return NextResponse.json({ error: "El buzón de comentarios aún no está configurado." }, { status: 503 });
-
-  const supabase = createClient(url, key, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-  const { error } = await supabase.from("feedback").insert({ category, message });
-  if (error) return NextResponse.json({ error: "No se pudo enviar el comentario. Inténtalo más tarde." }, { status: 500 });
+  try {
+    await database().execute({
+      sql: "INSERT INTO feedback (id, category, message, created_at) VALUES (?, ?, ?, ?)",
+      args: [randomUUID(), category, message, new Date().toISOString()],
+    });
+  } catch {
+    return NextResponse.json({ error: "No se pudo enviar el comentario. Inténtalo más tarde." }, { status: 500 });
+  }
 
   return NextResponse.json({ submitted: true }, { status: 201 });
 }

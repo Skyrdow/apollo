@@ -6,14 +6,14 @@ Este archivo documenta el producto solicitado y sirve como referencia para el tr
 
 Crear una aplicación web para que docentes armen pruebas listas para imprimir usando formularios sencillos, con una experiencia de edición similar a Google Forms. El docente organiza secciones, preguntas y encabezados; Aulaforma genera los PDF y permite crear varias formas de una misma prueba.
 
-La aplicación se alojará en Vercel y usará Supabase para cuentas y persistencia. La solicitud inicial mencionó Turso; el usuario corrigió expresamente la base de datos a Supabase.
+La aplicación se alojará en Vercel y usará Turso/libSQL para cuentas y persistencia. El proyecto parte desde cero: no importar los datos existentes en Supabase.
 
 ## 2. Principios del producto
 
 - El flujo principal debe ser visual y guiado: editar campos y preguntas, no diseñar páginas a mano.
 - El PDF debe ser generado en JavaScript a partir de los datos de la prueba.
 - Guardar en la base de datos los datos estructurados de la prueba y el historial; no guardar los archivos PDF generados.
-- Mantener las claves secretas de Supabase fuera del navegador. Usar Supabase Auth, clave publicable y políticas RLS.
+- Mantener `TURSO_AUTH_TOKEN` fuera del navegador; validar autenticación y permisos en las rutas del servidor.
 - Compartir bancos mediante enlaces de importación; al importar, el docente obtiene su propia copia editable.
 - La aleatorización debe conservar una pauta de respuestas correspondiente a cada forma.
 
@@ -24,7 +24,7 @@ El MVP está dirigido a docentes. Debe permitir:
 - Crear una cuenta con correo y contraseña.
 - Iniciar y cerrar sesión.
 - Guardar y consultar las pruebas propias.
-- Proteger los documentos de cada docente con Supabase Auth y RLS.
+- Proteger los documentos de cada docente mediante sesiones y consultas limitadas al propietario.
 - Exigir autenticación para guardar documentos o publicar bancos.
 
 Los PDF deben poder generarse desde el editor. El historial y el intercambio persistente entre dispositivos requieren una cuenta.
@@ -113,13 +113,16 @@ Agregar estos tipos después de observar cuáles necesita el profesorado; no req
 - Entregar un PDF de pauta separado; no añadir respuestas al mismo documento para estudiantes.
 - Incluir el encabezado personalizado, datos generales, campos para completar, secciones, puntajes y espacios de respuesta.
 - Respetar saltos de página, márgenes legibles y un tamaño de papel inicial consistente (carta; considerar A4 como opción posterior o configurable si el alcance lo permite).
-- El PDF puede volver a generarse a demanda. No persistir su blob en Supabase.
+- El PDF puede volver a generarse a demanda. No persistir sus archivos en Turso.
 
 ## 9. Historial y persistencia
 
-Supabase Postgres debe guardar, como mínimo:
+Turso/libSQL debe guardar, como mínimo:
 
-- **documents:** id, propietario (auth user id), título, JSON completo de la prueba, fecha de actualización.
+- **users:** id, correo único, hash de contraseña scrypt y nombre.
+- **sessions:** hash del token opaco, usuario y vencimiento.
+- **auth_rate_limits:** hash de IP, ventana y cantidad de solicitudes de autenticación.
+- **documents:** id, propietario (id de usuario), título, JSON completo de la prueba, fecha de actualización.
 - **banks:** id/link compartible, propietario, título, JSON de preguntas y fecha de creación.
 
 El historial debe listar pruebas recientes del usuario y permitir abrirlas, seguir editándolas y regenerar sus PDF. Guardar debe actualizar el mismo documento cuando tenga id, en vez de crear duplicados.
@@ -131,16 +134,16 @@ No almacenar PDFs generados. El JSON debe contener el encabezado, las secciones,
 - El docente autenticado puede crear un enlace de lectura/importación para un banco.
 - El enlace debe usar un identificador difícil de adivinar y permitir descargar/importar el JSON de preguntas.
 - Quien importe recibe una copia independiente; no modifica el banco original.
-- La lectura compartida se debe limitar al banco enlazado, con RLS y el token de enlace. No habilitar lectura anónima enumerable de todos los bancos.
+- La lectura compartida se debe limitar al banco indicado por el identificador no enumerable del enlace. No habilitar lectura anónima de listados ni acceso a bancos privados.
 - Un banco compartido incluye los datos pedagógicos necesarios para editar las preguntas, incluida la pauta para otros docentes.
 
 ## 11. Arquitectura y configuración
 
 - **Web:** Next.js con TypeScript, desplegable en Vercel.
-- **Cuentas y datos:** Supabase Auth y Postgres.
+- **Cuentas y datos:** autenticación propia por correo/contraseña y Turso/libSQL.
 - **PDF:** generación en el navegador con JavaScript.
-- **Seguridad:** clave publicable en cliente; nunca incluir claves secretas/service-role en código cliente ni variables `NEXT_PUBLIC_*`. Activar RLS en todas las tablas accesibles por la API.
-- Documentar las variables de entorno, la ejecución de `supabase/schema.sql`, configuración de URLs de Auth y pasos de desarrollo/despliegue.
+- **Seguridad:** mantener `TURSO_AUTH_TOKEN` sólo en variables de servidor, nunca en código cliente ni variables `NEXT_PUBLIC_*`. Las rutas privadas deben validar la sesión y filtrar por propietario.
+- Documentar las variables de entorno, la ejecución de `npm run db:setup` y los pasos de desarrollo/despliegue.
 
 ## 12. Criterios de aceptación del MVP
 
@@ -157,4 +160,4 @@ No almacenar PDFs generados. El JSON debe contener el encabezado, las secciones,
 
 ## 13. Revisión de alcance
 
-Construir primero el flujo completo de autoría → variantes → PDF/pauta → historial/compartir. Mantener la implementación pequeña, pero no quitar tipos, pauta, seguridad RLS ni personalización del encabezado, porque son requisitos funcionales explícitos.
+Construir primero el flujo completo de autoría → variantes → PDF/pauta → historial/compartir. Mantener la implementación pequeña, pero no quitar tipos, pauta, aislamiento por propietario ni personalización del encabezado, porque son requisitos funcionales explícitos.
