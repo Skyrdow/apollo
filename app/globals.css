@@ -39,9 +39,6 @@
 .question-type-group button:hover{border-color:#bbd1bc;background:#f6faf5}
 .question-type-group button b{color:#46564b;font-size:10px}
 .question-type-group button span{color:#89958c;font-size:9px;line-height:1.35}
-.export-modal{width:min(96vw,1160px);max-height:94vh;overflow:auto;padding:25px}
-.export-title h2{margin:5px 0;font:800 22px Manrope,sans-serif}
-.export-title p{margin:0;color:#829087;font-size:11px}
 .pdf-style-options{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin:17px 0}
 .pdf-style-option{display:grid;gap:4px;padding:11px 12px;border:1px solid #e2e8e1;border-radius:8px;background:#fff;text-align:left}
 .pdf-style-option:hover{border-color:#a8c4aa}
@@ -52,7 +49,7 @@
 .pdf-preview-frame{height:min(62vh,700px);min-height:390px;border:1px solid #dfe5de;border-radius:7px;background:#eef1ee;overflow:hidden}
 .pdf-preview-frame iframe{display:block;width:100%;height:100%;border:0;background:#fff}
 .pdf-preview-loading{display:grid;place-items:center;height:100%;color:#718077;font-size:12px}
-.export-modal-actions{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin-top:14px}
+.export-page-actions{display:flex;justify-content:flex-end;gap:8px;flex:none;padding-top:2px}
 .pdf-export-controls{display:grid;grid-template-columns:minmax(180px,.7fr) minmax(0,1.3fr);align-items:center;gap:11px;margin:-7px 0 13px}
 .pdf-font-control{display:grid;gap:5px;color:#526456;font-size:10px;font-weight:700}
 .pdf-font-control select{width:100%;min-height:38px;padding:8px 10px;border:1px solid #dfe7df;border-radius:7px;background:#fff;color:#34453a;font:inherit}
@@ -68,13 +65,13 @@
 .header-export-note span{color:#7e8b81;font-size:10px;line-height:1.5}
 .header-export-note .btn{align-self:flex-start}
 @media(max-width:1050px){.editor-layout{grid-template-columns:minmax(0,1fr) 270px;gap:18px}.minimap-column{padding:14px}}
-@media(max-width:780px){.editor-layout{grid-template-columns:1fr;gap:18px}.minimap-column{position:static}.header-export-note{margin-top:0}.question-type-picker{position:static;width:100%;grid-template-columns:1fr;margin-top:8px;box-shadow:none}.pdf-style-options{grid-template-columns:1fr}.pdf-preview-frame{height:55vh;min-height:300px}.export-modal{width:min(100%,720px);padding:20px}.export-modal-actions{justify-content:stretch}.export-modal-actions .btn{flex:1}.top-actions{overflow-x:auto}}
+@media(max-width:780px){.editor-layout{grid-template-columns:1fr;gap:18px}.minimap-column{position:static}.header-export-note{margin-top:0}.question-type-picker{position:static;width:100%;grid-template-columns:1fr;margin-top:8px;box-shadow:none}.pdf-style-options{grid-template-columns:1fr}.pdf-preview-frame{height:55vh;min-height:300px}.top-actions{overflow-x:auto}}
 .editor-layout:has(> .minimap-column[hidden]){grid-template-columns:minmax(0,1fr)}
 .minimap-column[hidden]{display:none}
 .minimap-toggle{white-space:nowrap}
 .content{max-width:1600px}
 .forms-button{display:inline-flex;align-items:center;justify-content:center;min-height:36px;line-height:1;white-space:nowrap}
-.eyebrow,.page-description,.metadata-grid label,.section-tab,.points,.delete-q,.option-delete,.instructions,.pick-row,.card-footer,.minimap-head p,.minimap-stats span,.minimap-copy>small,.minimap-footer,.question-type-group h4,.question-type-group button span,.export-title p,.pdf-style-option span,.header-export-note span,.logo-upload span,.header-label,.header-label small,.header-fields-head span,.header-help,.wide-toggle,.question-extra label,.expected-answer,.written-hint,.pair-row>span,.save-state,.page-heading p,.empty-card,.history-info span,.bank-feature p,.modal>p,.variant-note,.answer-dot{color:#59685e}
+.eyebrow,.page-description,.metadata-grid label,.section-tab,.points,.delete-q,.option-delete,.instructions,.pick-row,.card-footer,.minimap-head p,.minimap-stats span,.minimap-copy>small,.minimap-footer,.question-type-group h4,.question-type-group button span,.pdf-style-option span,.header-export-note span,.logo-upload span,.header-label,.header-label small,.header-fields-head span,.header-help,.wide-toggle,.question-extra label,.expected-answer,.written-hint,.pair-row>span,.save-state,.page-heading p,.empty-card,.history-info span,.modal>p,.variant-note,.answer-dot{color:#59685e}
 .minimap-number{color:#405e48}
 .answer-dot{border-color:#91a297}
 .answer-dot.correct{color:#28683f}
@@ -85,45 +82,28 @@
   .top-actions .btn{width:100%;min-width:0;justify-content:center;padding:8px 4px;font-size:10px;line-height:1.2;text-align:center;white-space:normal}
   .top-actions .btn span{display:none}
   .minimap-column{order:-1}
-  .export-modal-actions .btn{min-width:0}
+  .export-page-actions .btn{min-width:0}
 }
 .pdf-open-link{display:inline-flex;align-items:center;justify-content:center;min-height:38px;margin:0 0 12px;padding:9px 14px;border:1px solid #e2e8e1;border-radius:8px;background:#fff;color:#4d5b52;text-align:center;text-decoration:none}
 @media(max-width:780px){.pdf-open-link{width:100%}}
+.workspace:has(.export-page){display:flex;height:100dvh;flex-direction:column;overflow:hidden}
+.workspace:has(.export-page)>.topbar{flex:none}
+.export-page{display:flex;flex:1;flex-direction:column;gap:10px;min-height:0;padding:14px 28px 14px;overflow:hidden}
+.export-page-heading{flex:none;margin:0}
+.export-page-heading>.btn{flex:none}
+.export-page .pdf-style-options,.export-page .pdf-export-controls{flex:none;margin:0}
+.pdf-export-preview-header{display:flex;align-items:center;justify-content:space-between;gap:10px;flex:none;min-height:38px;color:#718077;font-size:11px}
+.export-page .pdf-open-link{flex:none;margin:0}
+.export-preview-frame{height:auto;min-height:0;flex:1}
+@media(max-width:780px){.export-page{gap:8px;padding:12px 12px 58px}.content.export-page .export-page-heading{flex-direction:row;align-items:flex-start}.export-page-heading>div{min-width:0}.content.export-page .export-page-heading>.btn{width:auto;white-space:nowrap;padding:7px 8px;font-size:11px}.export-page .pdf-style-options{grid-template-columns:repeat(3,minmax(0,1fr))}.export-page .pdf-style-option{padding:8px}.export-page .pdf-style-option span{font-size:8px}.export-page .pdf-export-controls{grid-template-columns:minmax(125px,.7fr) minmax(0,1.3fr)}.export-page-actions .btn{flex:1;min-width:0;padding:9px 6px;font-size:12px;line-height:1.2}.pdf-export-preview-header{font-size:10px}.export-page .pdf-open-link{width:auto}}
 
-.bank-library{margin-top:18px;padding:24px;border:1px solid #e5eae4;border-radius:12px;background:#fff}
-.bank-library-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;margin-bottom:18px}
-.bank-library-heading h2{margin:6px 0;font:700 18px Manrope,sans-serif;color:#34453a}
-.bank-library-heading p{max-width:650px;margin:0;color:#59685e;font-size:11px;line-height:1.5}
-.bank-library-heading>.btn{flex:none}
-.bank-link-form{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:12px;padding:16px;border:1px solid #e5eae4;border-radius:9px;background:#f8faf7;margin-bottom:16px}
-.bank-link-form label{display:grid;gap:6px;color:#526258;font-size:11px;font-weight:600}
-.bank-link-form input{width:100%;min-width:0;padding:11px 12px;border:1px solid #e1e7e0;border-radius:7px;background:#fff;color:#34453a;font-size:12px}
-.bank-link-form input:focus{outline:2px solid #6a9b70;outline-offset:1px}
-.bank-link-form .btn{white-space:nowrap}
-.bank-list{display:grid;gap:9px;padding:0;margin:0;list-style:none}
-.bank-list-item{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:14px 16px;border:1px solid var(--line);border-radius:9px;background:#fff}
-.bank-list-info{display:grid;gap:5px;min-width:0}
-.bank-list-info b{overflow-wrap:anywhere;color:#34453a;font-size:12px}
-.bank-list-info span{color:#59685e;font-size:10px}
-.bank-library-state{justify-content:space-between;gap:12px;padding:18px;margin:12px 0 0;color:#59685e}
-.bank-library-state .btn{flex:none}
-.bank-source-trigger{margin:8px 3px 0}
-@media(max-width:780px){
-  .bank-library{padding:16px 12px}
-  .bank-library-heading{flex-direction:column}
-  .bank-library-heading>.btn{width:100%}
-  .bank-link-form{grid-template-columns:minmax(0,1fr);padding:12px}
-  .bank-link-form .btn,.bank-list-item .btn{width:100%}
-  .bank-list-item{align-items:stretch;flex-direction:column;padding:13px}
-  .bank-library-state{align-items:stretch;flex-direction:column}
-}
 /* Readable workspace text at normal browser zoom; the paper preview keeps print scale. */
 body{font-size:16px}
 .content{font-size:16px}
 .content .eyebrow{font-size:11px}
 .content .btn{font-size:14px}
-.content .metadata-grid label,.content .header-label,.content .bank-link-form label{font-size:12px}
-.content .metadata-grid input,.content .header-label>input,.content .bank-link-form input{font-size:14px}
+.content .metadata-grid label,.content .header-label{font-size:12px}
+.content .metadata-grid input,.content .header-label>input{font-size:14px}
 .content .section-tab,.content .add-section,.content .question-toolbar select{font-size:12px}
 .content .instructions,.content .expected-answer,.content .question-extra label{font-size:13px}
 .content .pick-row{font-size:12px}
@@ -146,11 +126,6 @@ body{font-size:16px}
 .content .empty-card{font-size:14px}
 .content .history-info b{font-size:14px}
 .content .history-info span,.content .history-card button{font-size:12px}
-.content .bank-feature h2,.content .bank-library-heading h2{font-size:20px}
-.content .bank-feature p,.content .bank-library-heading p{font-size:14px}
-.content .bank-list-info b{font-size:14px}
-.content .bank-list-info span{font-size:12px}
-.content .bank-library-state{font-size:14px}
 .content .logo-upload b{font-size:13px}
 .content .logo-upload span,.content .header-label small,.content .wide-toggle{font-size:11px}
 .content .header-fields-head span,.content .header-help{font-size:12px}

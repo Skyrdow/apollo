@@ -1,5 +1,4 @@
 import Link from "next/link";
-import { redirect } from "next/navigation";
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
@@ -7,12 +6,8 @@ export const metadata: Metadata = {
   description: "Diseña evaluaciones escolares, genera formas aleatorias y descarga por separado la prueba y su pauta.",
 };
 
-type LandingProps = { searchParams: Promise<{ banco?: string | string[] }> };
 
-export default async function LandingPage({ searchParams }: LandingProps) {
-  const params = await searchParams;
-  const bankId = Array.isArray(params.banco) ? params.banco[0] : params.banco;
-  if (bankId) redirect(`/editor?banco=${encodeURIComponent(bankId)}`);
+export default function LandingPage() {
 
   return <main className="landing-shell">
     <header className="landing-nav">
@@ -35,7 +30,7 @@ export default async function LandingPage({ searchParams }: LandingProps) {
           <Link className="landing-primary-cta" href="/editor">Probar el editor <span aria-hidden="true">→</span></Link>
           <a className="landing-secondary-cta" href="#funciones">Conocer las funciones <span aria-hidden="true">↓</span></a>
         </div>
-        <p className="landing-note">Puedes crear y exportar una prueba sin registrarte. La cuenta sirve para guardar y compartir.</p>
+        <p className="landing-note">Puedes crear y exportar una prueba sin registrarte. La cuenta sirve para guardar tus pruebas.</p>
       </div>
 
       <div className="landing-visual" role="img" aria-label="Ejemplo de una evaluación creada en Apollo">
